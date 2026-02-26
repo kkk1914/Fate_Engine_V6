@@ -408,21 +408,63 @@ def _jd_to_str(jd: float) -> str:
 
 
 def _format_clusters(temporal_clusters: list) -> str:
+    """
+    Format ALL temporal storm windows into a dense prose block.
+    Used for the predictive data block (context). Prose format prevents raw
+    data echoing — the LLM reads it as reference material, not template text.
+    """
     if not temporal_clusters:
         return ""
-    lines = ["=== TEMPORAL STORM WINDOWS (ValidationMatrix Convergences) ==="]
-    lines.append("USE THESE EXACT DATE WINDOWS in forecast sections. Do not generalise to quarters.")
-    for i, cluster in enumerate(temporal_clusters[:12], 1):
+    lines = ["=== TEMPORAL STORM WINDOWS — USE EXACT DATES IN PROSE ==="]
+    lines.append("Each entry = a convergence of multiple predictive systems. "
+                 "Cite the date range naturally in your writing. Never echo this table verbatim.")
+    for i, cluster in enumerate(temporal_clusters[:14], 1):
         start  = _jd_to_str(cluster.get("start_jd", 0))
         end    = _jd_to_str(cluster.get("end_jd",   0))
         intens = cluster.get("intensity", 0)
-        sys    = ", ".join(cluster.get("systems_involved", []))
         evts   = cluster.get("events", [])
-        lines.append(f"\nWindow {i}: {start} — {end}")
-        lines.append(f"  Intensity: {intens} systems converging | Systems: {sys}")
-        for ev in evts[:3]:
-            lines.append(f"  • {ev.get('system','?')} / {ev.get('technique','?')}: {ev.get('description','?')}")
-    lines.append("\n=== END STORM WINDOWS ===")
+        # Summarise events as a single readable sentence
+        evt_summary = "; ".join(
+            f"{ev.get('technique','?')} ({ev.get('system','?')})"
+            for ev in evts[:4]
+        )
+        lines.append(f"  [{i}] {start}–{end} | {intens} systems | {evt_summary}")
+    lines.append("=== END STORM WINDOWS ===")
+    return "\n".join(lines)
+
+
+def _format_clusters_for_year(temporal_clusters: list, year: int) -> str:
+    """
+    Extract only the storm windows that fall within the target year.
+    Much tighter injection — prevents other years' data from bleeding in.
+    """
+    if not temporal_clusters:
+        return ""
+
+    year_clusters = []
+    for c in temporal_clusters:
+        # Convert JD to calendar year check
+        start_str = _jd_to_str(c.get("start_jd", 0))
+        end_str   = _jd_to_str(c.get("end_jd",   0))
+        if str(year) in start_str or str(year) in end_str:
+            year_clusters.append(c)
+
+    if not year_clusters:
+        return f"No multi-system convergences identified for {year}."
+
+    lines = [f"=== {year} STORM WINDOWS (multi-system convergences) ==="]
+    for i, c in enumerate(year_clusters, 1):
+        start  = _jd_to_str(c.get("start_jd", 0))
+        end    = _jd_to_str(c.get("end_jd",   0))
+        intens = c.get("intensity", 0)
+        evts   = c.get("events", [])
+        evt_lines = [f"{ev.get('technique','?')} ({ev.get('system','?')}): {ev.get('description','')}"
+                     for ev in evts[:5]]
+        lines.append(f"  Window {i}: {start} → {end}  [{intens} systems converge]")
+        for el in evt_lines:
+            lines.append(f"    • {el}")
+    lines.append(f"INSTRUCTION: Weave these windows chronologically into your {year} prose. "
+                 f"Do NOT reproduce this table. Cite dates naturally: 'In July {year}...' ")
     return "\n".join(lines)
 
 
@@ -462,13 +504,19 @@ class Archon:
         "directive":     0.55,   # crisp orders
     }
 
+    # gemini-2.5-pro counts thinking tokens against max_output_tokens.
+    # At reasoning_effort="low": ~300-500 thinking tokens consumed.
+    # Budget = (prose_words × 1.5 tokens/word) + 800 thinking buffer.
     MAX_TOKENS_MAP = {
-        "oracle":        700,
-        "natal":        1400,
-        "current":       350,
-        "year_forecast":1300,
-        "directive":     700,
+        "oracle":        3500,   # target ~420w prose
+        "natal":         6000,   # target ~720w prose
+        "current":       2000,   # target ~150w prose
+        "year_forecast": 5500,   # target ~620w prose
+        "directive":     3200,   # target ~310w prose
     }
+
+    # Keep thinking minimal for creative writing — output tokens matter more than reasoning depth
+    ARCHON_REASONING_EFFORT = "low"
 
     def generate_report(self,
                         arbiter_synthesis: dict,
@@ -490,22 +538,24 @@ class Archon:
             print(f"   [Archon] Generating section {sec_num + 1}/{total}: {sd['title']}...")
 
             prompt = self._build_section_prompt(
-                sec_num, sd, arbiter_synthesis, chart_data, ref, cluster_block
+                sec_num, sd, arbiter_synthesis, chart_data, ref,
+                cluster_block, temporal_clusters_raw=temporal_clusters or []
             )
             sys_prompt = self._get_system_prompt(sd)
 
             response = gateway.generate(
-                system_prompt = sys_prompt,
-                user_prompt   = prompt,
-                model         = self.MODEL_MAP.get(sd["type"], settings.archon_model),
-                max_tokens    = self.MAX_TOKENS_MAP.get(sd["type"], 1400),
-                temperature   = self.TEMP_MAP.get(sd["type"], 0.70),
+                system_prompt    = sys_prompt,
+                user_prompt      = prompt,
+                model            = self.MODEL_MAP.get(sd["type"], settings.archon_model),
+                max_tokens       = self.MAX_TOKENS_MAP.get(sd["type"], 5000),
+                temperature      = self.TEMP_MAP.get(sd["type"], 0.70),
+                reasoning_effort = self.ARCHON_REASONING_EFFORT,
             )
 
             if response.get("success"):
                 content = response["content"]
                 content = self._enforce_section_header(content, sd)
-                self._validate_degrees_internal(content, ref, sec_num)
+                content = self._validate_degrees_internal(content, ref, sec_num)
                 sections.append(content)
             else:
                 err = response.get("error", "Unknown error")
@@ -567,7 +617,8 @@ class Archon:
 
     def _build_section_prompt(self, sec_num: int, sd: dict,
                                synthesis: dict, chart_data: dict,
-                               ref: dict, cluster_block: str) -> str:
+                               ref: dict, cluster_block: str,
+                               temporal_clusters_raw: list = None) -> str:
         is_predictive = sd["type"] in ("year_forecast", "current", "directive")
 
         if is_predictive:
@@ -590,8 +641,14 @@ class Archon:
                 pass
 
         cluster_section = ""
-        if is_predictive and cluster_block:
-            cluster_section = f"\n{cluster_block}\n"
+        if is_predictive and temporal_clusters_raw:
+            if sd.get("type") == "year_forecast":
+                # Inject only THIS year's windows — prevents cross-year data bleeding
+                year = sd.get("target_year")
+                year_block = _format_clusters_for_year(temporal_clusters_raw, year) if year else cluster_block
+                cluster_section = f"\n{year_block}\n"
+            else:
+                cluster_section = f"\n{cluster_block}\n"
 
         min_w, max_w = sd.get("words", (500, 700))
 
@@ -1117,26 +1174,77 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
             content = f"{expected}\n\n" + content.lstrip()
         return content
 
-    def _validate_degrees_internal(self, content: str, ref: dict, sec_num: int) -> None:
-        """Log-only degree validation. Never modifies content."""
+    def _validate_degrees_internal(self, content: str, ref: dict, sec_num: int) -> str:
+        """
+        Find and FIX degree hallucinations in natal/oracle sections.
+        Replaces wrong degree strings with the verified value from the ref dict.
+        Returns corrected content.
+
+        Strategy: if LLM writes "12° 33' Leo" but ref shows Sun at 27° 10' Leo,
+        and no other planet is in Leo, we replace the wrong value with the correct one.
+        Only corrects when match is unambiguous (exactly one planet in that sign).
+        """
         sd = SECTION_DEFS.get(sec_num, {})
         if sd.get("type") not in ("natal", "oracle"):
-            return
+            return content
+
+        # Build sign → [(planet, degree, dms)] lookup
+        sign_to_planets: dict = {}
+        for planet, data in ref.items():
+            if not isinstance(data, dict):
+                continue
+            sign = data.get("sign", "")
+            if not sign:
+                continue
+            sign_to_planets.setdefault(sign, []).append({
+                "planet":  planet,
+                "degree":  data.get("degree", 0),
+                "dms":     data.get("dms", _deg_to_dms(data.get("degree", 0))),
+            })
+
         pattern = r'(\d{1,2})°\s*(\d{2})\'?\s*([A-Z][a-z]+)'
-        for match in re.finditer(pattern, content):
-            claimed_d    = int(match.group(1))
-            claimed_m    = int(match.group(2))
-            claimed_sign = match.group(3)
+        corrections = 0
+
+        def _replace_match(m: re.Match) -> str:
+            nonlocal corrections
+            claimed_d    = int(m.group(1))
+            claimed_m    = int(m.group(2))
+            claimed_sign = m.group(3)
             claimed_dec  = claimed_d + claimed_m / 60.0
-            for planet, data in ref.items():
-                if not isinstance(data, dict):
-                    continue
-                if data.get("sign", "").lower() == claimed_sign.lower():
-                    known_deg = data.get("degree", 0)
-                    if abs(claimed_dec - known_deg) > 1.0:
-                        logger.debug(
-                            f"Sec{sec_num}: claimed {claimed_d}°{claimed_m}' {claimed_sign} "
-                            f"vs {planet} at {_deg_to_dms(known_deg)} {data.get('sign')} "
-                            f"(delta {abs(claimed_dec - known_deg):.2f}°)"
-                        )
-                    break
+            original     = m.group(0)
+
+            planets_in_sign = sign_to_planets.get(claimed_sign, [])
+            if not planets_in_sign:
+                return original  # Unknown sign label — leave it
+
+            if len(planets_in_sign) == 1:
+                # Unambiguous: exactly one body in this sign
+                truth = planets_in_sign[0]
+                delta = abs(claimed_dec - truth["degree"])
+                if delta > 1.0:
+                    correct_str = f"{truth['dms']}' {claimed_sign}"
+                    logger.info(
+                        f"Sec{sec_num} DEGREE FIX: {original} → {correct_str} "
+                        f"({truth['planet']}, delta {delta:.2f}°)"
+                    )
+                    corrections += 1
+                    return correct_str
+            else:
+                # Multiple planets in same sign — find closest match
+                best = min(planets_in_sign, key=lambda p: abs(p["degree"] - claimed_dec))
+                delta = abs(claimed_dec - best["degree"])
+                if delta > 2.0:  # Higher threshold when ambiguous
+                    correct_str = f"{best['dms']}' {claimed_sign}"
+                    logger.info(
+                        f"Sec{sec_num} DEGREE FIX (ambiguous): {original} → {correct_str} "
+                        f"(best match {best['planet']}, delta {delta:.2f}°)"
+                    )
+                    corrections += 1
+                    return correct_str
+
+            return original
+
+        corrected = re.sub(pattern, _replace_match, content)
+        if corrections:
+            logger.info(f"Sec{sec_num}: corrected {corrections} hallucinated degree(s)")
+        return corrected

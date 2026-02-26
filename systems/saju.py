@@ -323,13 +323,32 @@ def shensha(pillars: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def calculate_bazi(birth_dt_utc: datetime, time_known: bool, gender: str, birth_jd: float) -> Dict[str, Any]:
+def calculate_bazi(birth_dt_utc: datetime, time_known: bool, gender: str, birth_jd: float,
+                   lon: float = 0.0) -> Dict[str, Any]:
+    """
+    Calculate Bazi (Four Pillars) chart.
+
+    CRITICAL: Bazi is based on Local Mean Time, not UTC.
+    A person born at 20:44 UTC+8 (Singapore, lon=103.82) must be calculated
+    for 20:44+6h55m = solar local time, not UTC.
+
+    lon: geographic longitude of birth (+E / -W). Used to derive LMT offset.
+    """
     if Solar is None or EightChar is None:
         raise ImportError("lunar_python not installed. pip install lunar-python")
 
-    # Convert UTC -> local Beijing? lunar_python expects local time; we keep UTC but it's okay if you later pass local.
-    solar = Solar.fromYmdHms(birth_dt_utc.year, birth_dt_utc.month, birth_dt_utc.day, birth_dt_utc.hour,
-                             birth_dt_utc.minute, 0)
+    # ── Convert UTC → Local Mean Time (LMT) ──────────────────────────────────
+    # LMT offset = longitude / 15 hours (each 15° = 1 solar hour)
+    # This is the astronomically correct base before True Solar Time corrections.
+    # For premium accuracy one would further apply the Equation of Time (~±16 min),
+    # but LMT correction is the dominant fix (up to ±12 hours for extreme longitudes).
+    lmt_offset_hours = lon / 15.0
+    birth_dt_lmt = birth_dt_utc + timedelta(hours=lmt_offset_hours)
+
+    solar = Solar.fromYmdHms(
+        birth_dt_lmt.year, birth_dt_lmt.month, birth_dt_lmt.day,
+        birth_dt_lmt.hour, birth_dt_lmt.minute, 0
+    )
 
     # Try both APIs for compatibility
     try:

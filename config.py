@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     saju_expert_model:        str = "gemini-2.5-flash-lite"
     hellenistic_expert_model: str = "gemini-2.5-flash-lite"
     arbiter_model:            str = "gemini-3-flash-preview"
-    archon_model:             str = "gemini-3.1-pro-preview"
+    archon_model:             str = "gemini-2.5-pro"
 
     # Ephemeris Path
     ephe_path: str = "./ephe"

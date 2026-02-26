@@ -298,7 +298,7 @@ class FatesOrchestrator:
         # SAJU (Bazi)
         print("   → Calculating Saju (Four Pillars)...")
         try:
-            saju = calculate_bazi(dt, True, gender, jd)
+            saju = calculate_bazi(dt, True, gender, jd, lon=lon)
         except ImportError:
             saju = {"natal": {}, "strength": {}, "predictive": {}}
 
