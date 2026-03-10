@@ -12,6 +12,14 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 import swisseph as swe
 
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
+
 
 class PrimaryDirections:
     """
@@ -35,7 +43,7 @@ class PrimaryDirections:
     def _calc_obliquity(self) -> float:
         """True obliquity from Swiss Ephemeris ECL_NUT."""
         try:
-            nut = swe.calc_ut(self.jd_natal, swe.ECL_NUT)[0]
+            nut = _swe_pos(swe.calc_ut(self.jd_natal, swe.ECL_NUT))
             return math.radians(float(nut[0]))
         except Exception:
             return math.radians(23.4392911)
@@ -54,8 +62,8 @@ class PrimaryDirections:
 
         if body in body_codes:
             # FLG_EQUATORIAL returns [RA, Dec, dist, RA_speed, Dec_speed, ...]
-            pos, _ = swe.calc_ut(self.jd_natal, body_codes[body],
-                                 swe.FLG_EQUATORIAL)
+            pos = _swe_pos(swe.calc_ut(self.jd_natal, body_codes[body],
+                                 swe.FLG_EQUATORIAL))
             return {"ra": float(pos[0]) % 360, "dec": float(pos[1])}
 
         # Angles: get ecliptic longitude then convert to equatorial

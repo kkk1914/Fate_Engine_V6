@@ -1,5 +1,13 @@
 """Vedic V2 Mathematical Engines (Ashtakavarga & Divisional Charts)."""
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from typing import Dict, Any, List
 from dataclasses import dataclass
 
@@ -31,7 +39,7 @@ class AshtakavargaEngine:
                            ("Mars", swe.MARS), ("Mercury", swe.MERCURY),
                            ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
                            ("Saturn", swe.SATURN)]:
-            pos, _ = swe.calc_ut(self.jd, code, swe.FLG_SIDEREAL)
+            pos = _swe_pos(swe.calc_ut(self.jd, code, swe.FLG_SIDEREAL))
             positions[name] = int(pos[0] // 30)
         cusps, ascmc = swe.houses_ex(self.jd, self.lat, self.lon, b'P', swe.FLG_SIDEREAL)
         positions["Ascendant"] = int(ascmc[0] // 30)
@@ -117,7 +125,7 @@ class DivisionalCharts:
                            ("Mars", swe.MARS), ("Mercury", swe.MERCURY),
                            ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
                            ("Saturn", swe.SATURN)]:
-            pos, _ = swe.calc_ut(self.jd, code)
+            pos = _swe_pos(swe.calc_ut(self.jd, code))
             positions[name] = pos[0]
         return positions
 

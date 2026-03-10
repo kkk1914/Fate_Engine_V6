@@ -1,5 +1,13 @@
 """Void of Course Moon calculations using Swiss Ephemeris."""
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -12,13 +20,13 @@ ASPECT_ORB = 6.0  # Scanning orb
 
 
 def _lon(jd: float, body: int) -> float:
-    pos, _ = swe.calc_ut(jd, body)
+    pos = _swe_pos(swe.calc_ut(jd, body))
     return float(pos[0])
 
 
 def _moon_speed(jd: float) -> float:
     """Moon's daily motion in degrees."""
-    pos, _ = swe.calc_ut(jd, swe.MOON, swe.FLG_SPEED)
+    pos = _swe_pos(swe.calc_ut(jd, swe.MOON, swe.FLG_SPEED))
     return float(pos[3])
 
 

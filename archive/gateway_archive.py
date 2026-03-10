@@ -1,11 +1,15 @@
-"""LLM Gateway — Unified interface for OpenAI and Google Gemini models.
+"""LLM Gateway — Google Gemini via google-genai SDK (not the deprecated google-generativeai).
 
-Routing logic:
-  - Model strings starting with "gemini-" → Google GenAI SDK
-  - All other model strings             → OpenAI SDK (legacy / fallback)
+Install:  pip install google-genai
+SDK docs: https://googleapis.github.io/python-genai/
 
-This means you can mix models per role simply by changing model strings
-in config.py — no other code changes required.
+Thinking support by model family:
+  gemini-2.5-flash-lite  → NO thinking (ignore reasoning_effort)
+  gemini-2.5-flash       → thinking_budget (0 = off, min 128)
+  gemini-2.5-pro         → thinking_budget (min 128, cannot turn off)
+  gemini-3-flash-*       → thinking_level  (minimal/low/medium/high)
+  gemini-3-pro-*         → thinking_level  (low/high)
+  gemini-3.1-pro-*       → thinking_level  (low/medium/high)
 """
 
 import json
@@ -13,201 +17,165 @@ import time
 import logging
 from typing import Dict, Any, Optional
 
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
+
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Lazy-initialise clients so unused SDKs don't cause import errors
+# Single shared client (created once at module load)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_openai_client   = None
-_gemini_client   = None  # google.generativeai module handle
+_client: Optional[genai.Client] = None
 
 
-def _get_openai():
-    global _openai_client
-    if _openai_client is None:
-        from openai import OpenAI
-        _openai_client = OpenAI(
-            api_key   = settings.openai_api_key,
-            timeout   = 300.0,
-            max_retries = 3,
-        )
-    return _openai_client
-
-
-def _get_gemini():
-    """Return configured google.generativeai module."""
-    global _gemini_client
-    if _gemini_client is None:
-        try:
-            import google.geneai as genai
-            genai.configure(api_key=settings.google_api_key)
-            _gemini_client = genai
-        except ImportError:
-            raise ImportError(
-                "google-generativeai package not installed. "
-                "Run: pip install google-generativeai"
-            )
-    return _gemini_client
-
-
-def _is_gemini(model: str) -> bool:
-    return model.lower().startswith("gemini")
+def _get_client() -> Optional[genai.Client]:
+    global _client
+    if _client is None:
+        key = settings.google_api_key
+        if not key:
+            logger.error("GOOGLE_API_KEY not set in .env")
+            return None
+        _client = genai.Client(api_key=key)
+    return _client
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Gemini helpers
+# Thinking config helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _gemini_thinking_level(reasoning_effort: Optional[str]) -> Optional[str]:
-    """Map OpenAI-style reasoning_effort → Gemini 3 thinking_level."""
-    mapping = {
-        "low":    "minimal",
-        "medium": "low",
-        "high":   "medium",
-        "max":    "high",
-    }
-    return mapping.get(str(reasoning_effort).lower()) if reasoning_effort else None
-
-
-def _gemini_generate(model: str, system_prompt: str, user_prompt: str,
-                     max_tokens: int, temperature: float,
-                     reasoning_effort: Optional[str] = None,
-                     json_mode: bool = False) -> Dict[str, Any]:
+def _supports_thinking(model: str) -> str:
     """
-    Call Google Gemini via google-generativeai SDK.
-    Handles Gemini 2.x and Gemini 3.x models.
+    Returns thinking mode:
+      'budget'  → Gemini 2.5 Flash / Pro (uses thinking_budget)
+      'level'   → Gemini 3.x (uses thinking_level)
+      'none'    → model doesn't support thinking (Flash Lite, etc.)
     """
-    genai = _get_gemini()
+    m = model.lower()
+    if "flash-lite" in m:
+        return "none"
+    if "2.5-flash" in m or "2.5-pro" in m:
+        return "budget"
+    if "gemini-3" in m or "gemini-3." in m:
+        return "level"
+    return "none"
 
-    # Build generation config
-    gen_cfg: Dict[str, Any] = {
-        "max_output_tokens": max_tokens,
-        "temperature":       temperature,
+
+def _effort_to_budget(reasoning_effort: Optional[str]) -> int:
+    """Map effort string → thinking_budget tokens for Gemini 2.5."""
+    mapping = {"low": 512, "medium": 1024, "high": 2048, "max": 4096}
+    return mapping.get(str(reasoning_effort).lower(), 1024) if reasoning_effort else 1024
+
+
+def _effort_to_level(reasoning_effort: Optional[str]) -> str:
+    """Map effort string → thinking_level string for Gemini 3."""
+    mapping = {"low": "minimal", "medium": "low", "high": "medium", "max": "high"}
+    return mapping.get(str(reasoning_effort).lower(), "low") if reasoning_effort else "low"
+
+
+def _build_thinking_config(model: str,
+                            reasoning_effort: Optional[str]) -> Optional[types.ThinkingConfig]:
+    """Return a ThinkingConfig appropriate for this model, or None."""
+    mode = _supports_thinking(model)
+    if mode == "none" or not reasoning_effort:
+        return None
+    if mode == "budget":
+        budget = _effort_to_budget(reasoning_effort)
+        # gemini-2.5-pro minimum is 128; cannot be turned off
+        budget = max(128, budget)
+        return types.ThinkingConfig(thinking_budget=budget)
+    if mode == "level":
+        level = _effort_to_level(reasoning_effort)
+        return types.ThinkingConfig(thinking_level=level)
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core generation function
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _gemini_call(model: str,
+                 system_prompt: str,
+                 user_prompt: str,
+                 max_tokens: int,
+                 temperature: float,
+                 reasoning_effort: Optional[str] = None,
+                 json_mode: bool = False) -> Dict[str, Any]:
+    """
+    Single call to Gemini via new google-genai SDK.
+    Returns {"success": True, "content": str, "model": str, "usage": dict}
+    or      {"success": False, "error": str, "content": None}
+    """
+    client = _get_client()
+    if not client:
+        return {"success": False, "error": "GOOGLE_API_KEY not configured", "content": None}
+
+    # Build config kwargs
+    cfg: Dict[str, Any] = {
+        "system_instruction": system_prompt,
+        "max_output_tokens":  max_tokens,
+        "temperature":        temperature,
     }
 
-    # Gemini 3 models support thinking_level
-    if reasoning_effort and any(m in model for m in ["gemini-3", "gemini-3."]):
-        tl = _gemini_thinking_level(reasoning_effort)
-        if tl:
-            gen_cfg["thinking_config"] = {"thinking_level": tl}
-
-    # JSON output mode
     if json_mode:
-        gen_cfg["response_mime_type"] = "application/json"
+        cfg["response_mime_type"] = "application/json"
 
-    # System instruction
-    generation_config = genai.GenerationConfig(**gen_cfg)
+    thinking = _build_thinking_config(model, reasoning_effort)
+    if thinking is not None:
+        cfg["thinking_config"] = thinking
+        # Some thinking models behave better with temperature=1
+        if "gemini-3" in model.lower():
+            cfg["temperature"] = 1.0
 
     try:
-        m = genai.GenerativeModel(
-            model_name        = model,
-            generation_config = generation_config,
-            system_instruction = system_prompt,
+        response = client.models.generate_content(
+            model    = model,
+            contents = user_prompt,
+            config   = types.GenerateContentConfig(**cfg),
         )
 
-        response = m.generate_content(user_prompt)
-
-        # Extract text safely
+        # Extract text — filter out thought parts (they have part.thought=True)
+        text_parts = []
         try:
-            content = response.text
-        except Exception:
-            # Some Gemini 3 responses need part-level extraction
-            parts = []
             for candidate in response.candidates:
                 for part in candidate.content.parts:
-                    if hasattr(part, "text") and part.text:
-                        parts.append(part.text)
-            content = "\n".join(parts)
+                    if not getattr(part, "thought", False) and part.text:
+                        text_parts.append(part.text)
+            content = "".join(text_parts) if text_parts else response.text
+        except Exception:
+            content = response.text
 
-        # Usage metadata (not always present)
+        # Usage metadata
         usage = {}
-        if hasattr(response, "usage_metadata") and response.usage_metadata:
-            um = response.usage_metadata
+        um = getattr(response, "usage_metadata", None)
+        if um:
             usage = {
-                "input_tokens":  getattr(um, "prompt_token_count",      0),
-                "output_tokens": getattr(um, "candidates_token_count",  0),
+                "input_tokens":  getattr(um, "prompt_token_count",     0),
+                "output_tokens": getattr(um, "candidates_token_count", 0),
+                "thinking_tokens": getattr(um, "thoughts_token_count", 0),
             }
 
-        return {
-            "success": True,
-            "content": content,
-            "model":   model,
-            "usage":   usage,
-        }
+        return {"success": True, "content": content, "model": model, "usage": usage}
 
+    except APIError as e:
+        logger.error(f"Gemini APIError [{model}]: {e}")
+        return {"success": False, "error": str(e), "content": None}
     except Exception as e:
-        logger.error(f"Gemini {model} error: {e}")
+        logger.error(f"Gemini error [{model}]: {e}")
         return {"success": False, "error": str(e), "content": None}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# OpenAI helper (preserved from original gateway)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _openai_generate(model: str, system_prompt: str, user_prompt: str,
-                     max_tokens: int, temperature: float,
-                     reasoning_effort: Optional[str] = None,
-                     json_mode: bool = False) -> Dict[str, Any]:
-    client = _get_openai()
-
-    # Reasoning models require temperature=1
-    if any(m in model.lower() for m in ["o1", "o3", "gpt-5"]):
-        temperature = 1.0
-
-    params: Dict[str, Any] = {
-        "model":    model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_prompt},
-        ],
-        "max_completion_tokens": max_tokens,
-        "temperature":           temperature,
-        "stream":                False,
-    }
-    if reasoning_effort:
-        params["reasoning_effort"] = reasoning_effort
-    if json_mode:
-        params["response_format"] = {"type": "json_object"}
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = client.chat.completions.create(**params)
-            return {
-                "success": True,
-                "content": response.choices[0].message.content,
-                "model":   model,
-                "usage": {
-                    "input_tokens":  response.usage.prompt_tokens,
-                    "output_tokens": response.usage.completion_tokens,
-                },
-            }
-        except Exception as e:
-            err = str(e).lower()
-            is_retryable = any(t in err for t in
-                               ["rate limit", "connection", "timeout", "503", "502"])
-            if is_retryable and attempt < max_retries - 1:
-                wait = 20 * (2 ** attempt)
-                logger.warning(f"OpenAI retry {attempt + 1} in {wait}s: {e}")
-                time.sleep(wait)
-            else:
-                logger.error(f"OpenAI {model} error: {e}")
-                return {"success": False, "error": str(e), "content": None}
-
-    return {"success": False, "error": "Max retries exceeded", "content": None}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LLMGateway — public interface (same API as original, no caller changes needed)
+# LLMGateway — public interface unchanged from previous versions
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LLMGateway:
     """
-    Unified gateway. Route to Gemini or OpenAI based on model string.
-    All existing callers (experts, arbiter, archon) work unchanged.
+    Gateway to Gemini models via google-genai SDK.
+    Public API is identical to previous versions — no caller changes needed.
     """
 
     def generate(self,
@@ -217,44 +185,39 @@ class LLMGateway:
                  max_tokens: int = 2800,
                  temperature: float = 0.7,
                  **kwargs) -> Dict[str, Any]:
-        """
-        Generate free-form text.
-        Automatically routes to Gemini or OpenAI based on model string.
-        """
+        """Free-form text generation."""
         model = model or settings.archon_model
-
-        # Safety: truncate enormous prompts
-        total_chars = len(system_prompt) + len(user_prompt)
-        if total_chars > 500_000:  # Gemini supports 1M context; keep buffer
-            logger.warning(f"Prompt very large ({total_chars} chars), truncating user prompt...")
-            user_prompt = user_prompt[:480_000] + "\n\n[truncated]"
-
         reasoning_effort = kwargs.get("reasoning_effort")
 
-        if _is_gemini(model):
-            result = _gemini_generate(
+        # Truncate enormous prompts (safety net)
+        if len(system_prompt) + len(user_prompt) > 500_000:
+            logger.warning("Prompt > 500K chars, truncating user_prompt...")
+            user_prompt = user_prompt[:480_000] + "\n\n[truncated]"
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            result = _gemini_call(
                 model, system_prompt, user_prompt,
                 max_tokens, temperature, reasoning_effort,
                 json_mode=False,
             )
-            # Retry once on transient connection errors
-            if not result.get("success") and any(
-                t in str(result.get("error", "")).lower()
-                for t in ["connection", "timeout", "503", "unavailable"]
-            ):
-                logger.warning(f"Gemini transient error, retrying in 5s...")
-                time.sleep(5)
-                result = _gemini_generate(
-                    model, system_prompt, user_prompt,
-                    max_tokens, temperature, reasoning_effort, False
-                )
-            return result
-        else:
-            return _openai_generate(
-                model, system_prompt, user_prompt,
-                max_tokens, temperature, reasoning_effort,
-                json_mode=False,
-            )
+            if result["success"]:
+                if attempt > 1:
+                    logger.info(f"Succeeded on attempt {attempt}")
+                return result
+
+            err = str(result.get("error", "")).lower()
+            is_retryable = any(t in err for t in
+                               ["connection", "timeout", "503", "unavailable",
+                                "resource exhausted", "rate limit"])
+            if is_retryable and attempt < max_retries:
+                wait = 5 * attempt
+                logger.warning(f"Transient error, retry {attempt}/{max_retries} in {wait}s: {result['error']}")
+                time.sleep(wait)
+            else:
+                return result
+
+        return {"success": False, "error": "Max retries exceeded", "content": None}
 
     def structured_generate(self,
                              system_prompt: str,
@@ -265,63 +228,51 @@ class LLMGateway:
                              temperature: float = 0.7,
                              **kwargs) -> Dict[str, Any]:
         """
-        Generate structured JSON output matching output_schema.
-        For Gemini: uses response_mime_type="application/json" + schema in prompt.
-        For OpenAI: uses response_format={"type":"json_object"}.
+        Structured JSON generation.
+        Uses Gemini's native JSON mode (response_mime_type=application/json)
+        with the schema embedded in the system prompt.
         """
         model = model or settings.arbiter_model
-
-        # Embed schema in system prompt for both providers
-        schema_instruction = (
-            f"\n\nYou must respond with valid JSON matching this schema exactly:\n"
-            f"{json.dumps(output_schema, indent=2)}\n"
-            f"Respond ONLY with the JSON object. No markdown. No ```json blocks."
-        )
-        system_with_schema = system_prompt + schema_instruction
-
         reasoning_effort = kwargs.get("reasoning_effort")
 
+        schema_instruction = (
+            f"\n\nRespond ONLY with valid JSON matching this schema exactly:\n"
+            f"{json.dumps(output_schema, indent=2)}\n"
+            f"Do not include markdown, code fences, or any explanation."
+        )
+        full_system = system_prompt + schema_instruction
+
         max_retries = 3
-        last_error  = "Unknown"
+        last_error = "Unknown"
 
         for attempt in range(1, max_retries + 1):
-            if _is_gemini(model):
-                result = _gemini_generate(
-                    model, system_with_schema, user_prompt,
-                    max_tokens, temperature, reasoning_effort,
-                    json_mode=True,
-                )
-            else:
-                result = _openai_generate(
-                    model, system_with_schema, user_prompt,
-                    max_tokens, temperature, reasoning_effort,
-                    json_mode=True,
-                )
+            result = _gemini_call(
+                model, full_system, user_prompt,
+                max_tokens, temperature, reasoning_effort,
+                json_mode=True,
+            )
 
-            if not result.get("success"):
+            if not result["success"]:
                 last_error = result.get("error", "Unknown")
-                err_lower  = str(last_error).lower()
-                is_retry   = any(t in err_lower for t in
-                                 ["connection", "timeout", "503", "502",
-                                  "unavailable", "rate limit"])
-                if is_retry and attempt < max_retries:
+                err = str(last_error).lower()
+                is_retryable = any(t in err for t in
+                                   ["connection", "timeout", "503", "502",
+                                    "unavailable", "resource exhausted", "rate limit"])
+                if is_retryable and attempt < max_retries:
                     wait = 5 * attempt
-                    logger.warning(f"structured_generate attempt {attempt} failed "
-                                   f"({last_error}). Retry in {wait}s...")
+                    logger.warning(f"structured_generate retry {attempt} in {wait}s: {last_error}")
                     time.sleep(wait)
                     continue
                 return {"success": False, "error": last_error, "data": None}
 
-            # Parse JSON from content
-            content = result.get("content", "")
-            # Strip markdown code fences if present
-            clean = content.strip()
-            if clean.startswith("```"):
-                clean = clean.split("\n", 1)[-1]
-                clean = clean.rsplit("```", 1)[0].strip()
+            # Parse JSON — strip any accidental fences
+            content = result.get("content", "").strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1]
+                content = content.rsplit("```", 1)[0].strip()
 
             try:
-                data = json.loads(clean)
+                data = json.loads(content)
                 return {
                     "success": True,
                     "data":    data,
@@ -330,26 +281,27 @@ class LLMGateway:
                 }
             except json.JSONDecodeError as e:
                 logger.error(f"JSON decode error (attempt {attempt}): {e}\n"
-                             f"Content: {clean[:400]}")
+                             f"Content preview: {content[:400]}")
                 if attempt < max_retries:
                     time.sleep(3)
                     continue
                 return {
                     "success":     False,
                     "error":       f"Invalid JSON: {e}",
-                    "raw_content": clean[:1000],
+                    "raw_content": content[:1000],
                     "data":        None,
                 }
 
         return {"success": False, "error": f"All retries failed: {last_error}", "data": None}
 
-    # Backwards-compat alias used by archon v1
+    # Backwards-compatibility alias (used by archon v1)
     def generate_chapter(self, system_prompt: str, chapter_context: str,
                          chapter_num: int, model: str = None) -> Dict[str, Any]:
         model = model or settings.archon_model
         return self.generate(
             system_prompt = system_prompt,
-            user_prompt   = f"CHAPTER {chapter_num} CONTEXT:\n\n{chapter_context}\n\nWrite 300–500 words.",
+            user_prompt   = (f"CHAPTER {chapter_num} CONTEXT:\n\n"
+                             f"{chapter_context}\n\nWrite 300–500 words."),
             model         = model,
             max_tokens    = 1500,
             temperature   = 0.7,

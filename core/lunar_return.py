@@ -1,5 +1,13 @@
 """Lunar Return calculations - monthly precision timing."""
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Tuple, Optional
 
@@ -63,7 +71,7 @@ class LunarReturnEngine:
         best_diff = 999
 
         while jd < end_jd:
-            pos, _ = swe.calc_ut(jd, swe.MOON)
+            pos = _swe_pos(swe.calc_ut(jd, swe.MOON))
             diff = (pos[0] - self.natal_moon) % 360
             if diff > 180:
                 diff = 360 - diff
@@ -84,7 +92,7 @@ class LunarReturnEngine:
             step = 0.25
 
             while step > 0.0001:
-                pos, _ = swe.calc_ut(jd, swe.MOON)
+                pos = _swe_pos(swe.calc_ut(jd, swe.MOON))
                 diff = (pos[0] - self.natal_moon) % 360
                 if diff > 180:
                     diff -= 360

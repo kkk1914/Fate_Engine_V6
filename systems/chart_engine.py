@@ -5,6 +5,14 @@ from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from geopy.geocoders import Nominatim
 
 # -----------------------------
@@ -104,17 +112,18 @@ def jd_from_utc(dt_utc: datetime) -> float:
     return swe.julday(dt_utc.year, dt_utc.month, dt_utc.day, dt_utc.hour + dt_utc.minute/60.0 + dt_utc.second/3600.0)
 
 def calc_lon_lat(jd: float, pcode: int, flags: int = 0) -> Tuple[float,float]:
-    pos, _ = swe.calc_ut(jd, pcode, flags)
+    pos = _swe_pos(swe.calc_ut(jd, pcode, flags))
     return float(pos[0]), float(pos[1])
 
 def calc_declination(jd: float, pcode: int) -> float:
-    pos_equ, _ = swe.calc_ut(jd, pcode, swe.FLG_EQUATORIAL)
+    pos_equ = _swe_pos(swe.calc_ut(jd, pcode, swe.FLG_EQUATORIAL))
     # pos_equ[1] declination
     return float(pos_equ[1])
 
 def fixed_star_lon(jd: float, star_name: str) -> Optional[float]:
     try:
-        (lon, lat, dist, _), _ = swe.fixstar2_ut(star_name, jd)
+        _star_raw = _swe_pos(swe.fixstar2_ut(star_name, jd))
+        lon, lat, dist = _star_raw[0], _star_raw[1], _star_raw[2]
         return float(lon)
     except Exception:
         return None
@@ -571,7 +580,7 @@ def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_d
         }
 
     # Nodes (mean node)
-    node, _ = swe.calc_ut(jd, swe.MEAN_NODE, v_flags)
+    node = _swe_pos(swe.calc_ut(jd, swe.MEAN_NODE, v_flags))
     rahu = float(node[0])
     ketu = clamp360(rahu + 180)
     placements["Rahu"] = {"lon": rahu, "sign": zodiac_sign_v(rahu), "deg_in_sign": deg_in_sign(rahu),

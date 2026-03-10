@@ -7,6 +7,14 @@ This produces a "sub-sign" that shows the deeper resonance of any placement.
 Authority: Vettius Valens (Anthologies, Book I), Ptolemy (Tetrabiblos I.22).
 """
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from typing import Dict, Any, List, Optional
 
 
@@ -89,13 +97,13 @@ class DodecatemoriaEngine:
 
         # Planets
         for name, code in self.PLANET_CODES.items():
-            pos, _ = swe.calc_ut(jd, code)
+            pos = _swe_pos(swe.calc_ut(jd, code))
             planet_lon = float(pos[0])
             results[name] = dodecatemoria_sign(planet_lon)
             results[name]["longitude"] = round(planet_lon, 4)
 
         # Nodes
-        node_pos, _ = swe.calc_ut(jd, swe.MEAN_NODE)
+        node_pos = _swe_pos(swe.calc_ut(jd, swe.MEAN_NODE))
         rahu_lon = float(node_pos[0])
         ketu_lon = (rahu_lon + 180.0) % 360.0
         results["North Node"] = dodecatemoria_sign(rahu_lon)

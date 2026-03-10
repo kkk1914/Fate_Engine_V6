@@ -1,5 +1,13 @@
 """Full Ashtakavarga calculations."""
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from typing import Dict, Any, List, Tuple
 from dataclasses import dataclass
 
@@ -47,7 +55,7 @@ class AshtakavargaEngine:
         self.lat = lat
         self.lon = lon
         self.positions = self._get_planet_positions()
-        self.bhinna_ashtakavarga = self._calculate_bhinna()
+        self.bhinna_ashtakavarga = self._calc_bhinna()
         self.sarva_ashtakavarga = self._calculate_sarva()
 
     def _get_planet_positions(self) -> Dict[str, int]:
@@ -59,7 +67,7 @@ class AshtakavargaEngine:
                            ("Mars", swe.MARS), ("Mercury", swe.MERCURY),
                            ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
                            ("Saturn", swe.SATURN)]:
-            pos, _ = swe.calc_ut(self.jd, code, swe.FLG_SIDEREAL)
+            pos = _swe_pos(swe.calc_ut(self.jd, code, swe.FLG_SIDEREAL))
             positions[name] = int(pos[0] // 30)
 
         # Ascendant

@@ -10,7 +10,9 @@ from orchestrator import orchestrator
 @click.option('--gender', '-g', default='unspecified', help='Gender: male/female/unspecified')
 @click.option('--name', '-n', default='Unknown', help='Subject name')
 @click.option('--output', '-o', default='./reports', help='Output directory')
-def generate(birth, location, gender, name, output):
+@click.option('--lat', type=float, default=None, help='Override latitude (for small towns)')
+@click.option('--lon', type=float, default=None, help='Override longitude (for small towns)')
+def generate(birth, location, gender, name, output, lat, lon):
     """Generate astrological master report."""
     click.echo("🌟 Fates Engine Core v1.0")
     click.echo("=" * 60)
@@ -21,7 +23,9 @@ def generate(birth, location, gender, name, output):
             location=location,
             gender=gender,
             name=name,
-            output_dir=output
+            output_dir=output,
+            lat=lat,
+            lon=lon
         )
         click.echo(f"\n✨ Report generated successfully!")
         click.echo(f"   Location: {report_path}")

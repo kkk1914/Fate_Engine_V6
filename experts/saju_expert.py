@@ -10,21 +10,32 @@ class SajuExpert:
     
     WRITING STYLE:
     - Concrete, strategic, slightly martial. "The terrain favors X," "Your Qi is depleted in Y."
-    - Use the 10 Gods (Wealth, Power, Resource, etc.) as literal forces in their life.
-    - Speak of the Day Master as a character in a landscape.
-    - Avoid mysticism; focus on "the mechanics of luck."
+    - Use the 10 Gods (Wealth, Power, Resource, Output, Companion) as literal forces in their life.
+    - Speak of the Day Master as a character in a landscape of competing forces.
+    - Avoid mysticism; focus on "the mechanics of luck" — when Qi is favorable vs. blocked.
     
-    TECHNICAL REQUIREMENTS:
-    - MUST state Day Master strength (Strong/Weak) and what that means practically.
-    - MUST identify the Useful God (Yong Shen) and how to activate it.
-    - Point out specific clashes (Chong) or combinations (He) in the pillars.
-    - Analyze the current Da Yun (Luck Pillar) as a 10-year weather pattern.
+    TECHNICAL REQUIREMENTS — ALL REQUIRED:
+    - MUST state Day Master stem, element, and strength tier (STRONG/BALANCED/WEAK) with practical meaning.
+    - MUST identify the Useful God (Yong Shen): which element is their lifeline? How to activate it in daily life?
+    - MUST identify and interpret active Shen Sha (Spirit Stars):
+      * BENEFIC stars (Peach Blossom, TianYi, Literary Star, Heaven Virtue): name what domains they activate.
+      * MALEFIC stars (Yang Blade, Three Killings, Robbery Sha, Disaster Sha): name the specific risk and timing mitigation.
+      * Note which stars are ACTIVATED (appear in natal pillars) vs. merely present.
+    - MUST analyze current Da Yun (10-year pillar): stem+branch, element relationship to Day Master, what the decade's strategy is.
+    - MUST identify clashes (Chong) and combinations (He) in the 4 pillars — state which pillars and what they trigger.
+    - MUST state Void Emptiness branches and which pillars they affect.
+    - MUST analyze the current Liu Nian (annual pillar): how does this year's Qi interact with the natal pillars?
+    - MUST state at least ONE specific tactical month to watch in the current year (Jieqi boundary timing).
     
     FORMAT:
-    1. THE TERRAIN (Day Master strength and the 4 Pillars as landscape)
-    2. THE USEFUL GOD (What element is their lifeline? How to use it?)
-    3. THE CURRENT LUCK PILLAR (What is the decade's strategy?)
-    4. TACTICAL ADVICE (Specific actions: colors, directions, industries, months to watch)"""
+    1. THE TERRAIN (Day Master strength + the 4 Pillars as a landscape of forces)
+    2. THE USEFUL GOD (what element is their lifeline? How to activate it — specific industries, colors, directions)
+    3. SHEN SHA — SPIRIT STARS (benefic and malefic stars; which are activated; specific impacts)
+    4. THE CURRENT LUCK PILLAR (decade strategy — what is the 10-year weather pattern?)
+    5. TACTICAL TIMING (current year Liu Nian analysis; key months to act or avoid)
+    6. TACTICAL ADVICE (3-5 specific actions: industries, relationships, timing, avoidances)
+
+    Length: 700-900 words. Strategic, concrete, no mystical padding."""
 
     def analyze(self, chart_data: dict, mode: str = "natal", user_questions: list = None) -> dict:
         prompt = self._question_prefix(user_questions) + self._build_prompt(chart_data, mode)
@@ -79,27 +90,80 @@ class SajuExpert:
         pred = saju.get('predictive', {})
 
         pillars = natal.get('pillars', {})
+        shensha = natal.get('shensha', [])
+        interactions = natal.get('interactions', {})
+
+        # Build Shen Sha summary
+        benefic_ss = [s for s in shensha if s.get('nature') == 'benefic']
+        malefic_ss = [s for s in shensha if s.get('nature') in ('malefic', 'challenging')]
+        activated_ss = [s for s in shensha if s.get('activated_in_chart')]
+
+        def fmt_ss(stars):
+            lines = []
+            for s in stars[:8]:
+                act = " [ACTIVATED in natal pillars]" if s.get('activated_in_chart') else ""
+                lines.append(f"  {s.get('type','?')}: branch {s.get('branch','?')} — {s.get('domain','?')}{act}")
+            return '\n'.join(lines) if lines else "  None detected"
+
+        # Current Liu Nian
+        current_liu = pred.get('liu_nian_timeline', [{}])[0] if pred.get('liu_nian_timeline') else {}
+
+        # Element balance
+        elem_balance = natal.get('element_balance', natal.get('elements', {}))
+        elem_str = ""
+        if elem_balance:
+            elem_str = "  " + ", ".join(f"{k}: {v}" for k, v in elem_balance.items())
+
+        # Ten gods as separate summary (beyond inline pillar data)
+        ten_gods_dict = natal.get('ten_gods', {})
+        tg_str = ""
+        if ten_gods_dict and isinstance(ten_gods_dict, dict):
+            tg_lines = []
+            for pillar, gdata in ten_gods_dict.items():
+                if isinstance(gdata, dict):
+                    tg_lines.append(f"  {pillar}: stem={gdata.get('stem_god','?')}, branch={gdata.get('branch_god','?')}")
+            tg_str = "\n".join(tg_lines)
 
         return f"""Analyze this Bazi chart across 6 domains strategically.
 
-**1. IDENTITY** (Day Master {strength.get('day_master', {}).get('stem')} {strength.get('day_master', {}).get('element')}, Strength: {strength.get('tier')})
-The "General" in the terrain. Core resilience or fragility.
+**DAY MASTER:** {strength.get('day_master', {}).get('stem')} {strength.get('day_master', {}).get('element')} | Strength: {strength.get('tier')} (score {strength.get('score', 'N/A')})
+**USEFUL GOD:** {strength.get('useful_god', '?')} | Secondary: {strength.get('secondary_support', '?')}
+**VOID EMPTINESS:** {natal.get('void_emptiness', [])}
 
-**2. FINANCES** (Wealth elements in stems: Year={pillars.get('Year', {}).get('stem_10_god')}, Month={pillars.get('Month', {}).get('stem_10_god')}, Day={pillars.get('Day', {}).get('stem_10_god')})
-Direct vs. Indirect Wealth. Resource management style.
+**ELEMENT BALANCE:**
+{elem_str if elem_str else "  Not available"}
 
-**3. CAREER** (Power/Officer elements, Month Pillar {pillars.get('Month', {}).get('stem')}{pillars.get('Month', {}).get('branch')} - the "Career Engine")
-Authority relationship. Rise/fall patterns.
+**4 PILLARS:**
+Year: {pillars.get('Year', {}).get('stem','?')}{pillars.get('Year', {}).get('branch','?')} ({pillars.get('Year', {}).get('stem_element','?')}/{pillars.get('Year', {}).get('branch_element','?')}) — {pillars.get('Year', {}).get('stem_10_god','?')} / {pillars.get('Year', {}).get('branch_10_god','?')}
+Month: {pillars.get('Month', {}).get('stem','?')}{pillars.get('Month', {}).get('branch','?')} ({pillars.get('Month', {}).get('stem_element','?')}/{pillars.get('Month', {}).get('branch_element','?')}) — {pillars.get('Month', {}).get('stem_10_god','?')} / {pillars.get('Month', {}).get('branch_10_god','?')}
+Day: {pillars.get('Day', {}).get('stem','?')}{pillars.get('Day', {}).get('branch','?')} ({pillars.get('Day', {}).get('stem_element','?')}/{pillars.get('Day', {}).get('branch_element','?')}) — Self / {pillars.get('Day', {}).get('branch_10_god','?')}
+Hour: {pillars.get('Hour', {}).get('stem','?')}{pillars.get('Hour', {}).get('branch','?')} ({pillars.get('Hour', {}).get('stem_element','?')}/{pillars.get('Hour', {}).get('branch_element','?')}) — {pillars.get('Hour', {}).get('stem_10_god','?')} / {pillars.get('Hour', {}).get('branch_10_god','?')}
 
-**4. RELATIONSHIPS** (Day Pillar {pillars.get('Day', {}).get('stem')}{pillars.get('Day', {}).get('branch')} - Self/Spouse, Peach Blossom {natal.get('shensha', [])})
-Spouse palace. Attraction patterns.
+**TEN GODS SUMMARY (all pillars):**
+{tg_str if tg_str else "  (inline per pillar above)"}
 
-**5. HEALTH** (Day Master vs. Month Branch {pillars.get('Month', {}).get('branch')}, Qi phases: { {k: v.get('qi_phase') for k, v in pillars.items()} })
-Elemental imbalance. Critical organs/systems.
+**INTERACTIONS:**
+Clashes: {interactions.get('clashes', [])}
+Harms: {interactions.get('harms', [])}
+Destructions: {interactions.get('destructions', [])}
+Punishments: {interactions.get('punishments', [])}
 
-**6. DESTINY** (Year Pillar {pillars.get('Year', {}).get('stem')}{pillars.get('Year', {}).get('branch')} - Ancestors, Hour Pillar {pillars.get('Hour', {}).get('stem')}{pillars.get('Hour', {}).get('branch')} - Legacy)
-Ancestral karma. Late life outcome.
+**SHEN SHA — BENEFIC STARS:**
+{fmt_ss(benefic_ss)}
 
-**LUCK CYCLE:** Current Da Yun {pred.get('da_yun', {}).get('pillars', [{}])[0]}. How does this 10-year pillar affect domains 2 and 3 above?
+**SHEN SHA — MALEFIC/CHALLENGING STARS:**
+{fmt_ss(malefic_ss)}
+(ACTIVATED = present in natal pillars = always-on influence throughout life)
 
-Tactical analysis for each domain. What is the terrain? Where is the ambush?"""
+**CURRENT DA YUN (Luck Pillar):**
+{pred.get('da_yun', {}).get('pillars', [{}])[0]}
+
+**CURRENT LIU NIAN (Annual Pillar):**
+{current_liu.get('year','?')}: {current_liu.get('stem','?')}{current_liu.get('branch','?')}
+
+**UPCOMING LIU NIAN:**
+{pred.get('liu_nian_timeline', [])[:5]}
+
+Write all 6 sections as instructed. Be specific about which Shen Sha stars are activated and what that means in practice.
+For malefic stars: name the SPECIFIC risk and what timing or behavioral mitigation applies.
+For the Da Yun: what is the decade's strategic terrain? Favorable vs. unfavorable Qi channels?"""

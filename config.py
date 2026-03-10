@@ -1,10 +1,13 @@
 """Configuration management for Fates Engine."""
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 from typing import Optional
 import os
 import warnings
 
 class Settings(BaseSettings):
+    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     # Neo4j AuraDB Configuration
     neo4j_uri: str = "neo4j+s://your-instance.databases.neo4j.io"
     neo4j_user: str = "neo4j"
@@ -39,10 +42,6 @@ class Settings(BaseSettings):
 
     # Test Mode (skip API calls if True)
     test_mode: bool = False
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
     def validate(self):
         """Validate settings with graceful degradation."""

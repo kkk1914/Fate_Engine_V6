@@ -1,5 +1,13 @@
 """Divisional Charts (Varga) calculations."""
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from typing import Dict, Any, List, Tuple
 from dataclasses import dataclass
 
@@ -50,7 +58,7 @@ class DivisionalCharts:
                            ("Mars", swe.MARS), ("Mercury", swe.MERCURY),
                            ("Jupiter", swe.JUPITER), ("Venus", swe.VENUS),
                            ("Saturn", swe.SATURN), ("Rahu", swe.MEAN_NODE)]:
-            pos, _ = swe.calc_ut(self.jd, code)
+            pos = _swe_pos(swe.calc_ut(self.jd, code))
             positions[name] = pos[0]
         return positions
 

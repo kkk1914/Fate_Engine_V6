@@ -11,6 +11,7 @@ import math
 from core.vedic_engines import AshtakavargaEngine
 from core.vedic_engines import DivisionalCharts
 from core.tajaka import TajakaEngine
+from core.shadbala import calculate_shadbala as calculate_shadbala_full
 
 # Vedic_engine-specific constants
 ZODIAC_V = ["Mesha", "Vrishabha", "Mithuna", "Karka", "Simha", "Kanya", "Tula", "Vrischika", "Dhanus", "Makara",
@@ -37,6 +38,14 @@ DEBIL = {"Sun": "Tula", "Moon": "Vrischika", "Mars": "Karka", "Mercury": "Meena"
          "Saturn": "Mesha", "Rahu": "Vrischika", "Ketu": "Vrishabha"}
 
 
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
+
 def zodiac_sign_v(deg: float) -> str:
     return ZODIAC_V[int(clamp360(deg) // 30)]
 
@@ -51,15 +60,6 @@ def midpoint(d1: float, d2: float) -> float:
     if diff > 180:
         return clamp360((a + b + 360) / 2)
     return clamp360((a + b) / 2)
-
-
-def _calc_shadbala_full(jd: float, lat: float, lon: float) -> Dict[str, Any]:
-    """Call full Shadbala engine with graceful degradation."""
-    try:
-        from core.shadbala import calculate_shadbala
-        return calculate_shadbala(jd, lat, lon)
-    except Exception as e:
-        return {"planet_scores": {}, "method": "error", "error": str(e)}
 
 
 def nakshatra_and_pada(sid_lon: float) -> Dict[str, Any]:
@@ -172,7 +172,7 @@ def vimshottari_antardasha(moon_sid_lon: float, age_years: float) -> Dict[str, A
     lord_idx = nak_idx % 9
     passed_in_nak = clamp360(moon_sid_lon) % nak_size
     frac_remaining = 1.0 - (passed_in_nak / nak_size)
-    first_left = frac_remaining * dasha_lords[lord_idx] if False else frac_remaining * dasha_years[lord_idx]
+    first_left = frac_remaining * dasha_years[lord_idx]
 
     # ── Identify current Maha Dasha index and age-into-maha ──────────────────
     if age_years <= first_left:
@@ -221,26 +221,245 @@ def vimshottari_antardasha(moon_sid_lon: float, age_years: float) -> Dict[str, A
     }
 
 
+def shadbala_v2(placements: Dict[str, Any], is_day: bool = True) -> Dict[str, Any]:
+    """
+    Full 6-Strength Shadbala.
+    Sub-strengths (all in Shashtiamshas, max indicated):
+      1. Sthana Bala  — Positional strength (max ~180)
+      2. Dig Bala     — Directional strength (max 60)
+      3. Kala Bala    — Temporal strength (max ~80)
+      4. Chesta Bala  — Motional/speed strength (max 60)
+      5. Naisargika   — Natural/fixed hierarchy (max 60)
+      6. Drik Bala    — Aspectual (benefic vs malefic aspect balance)
+    Expressed in Rupas (1 Rupa = 60 Shashtiamshas) for final output.
+
+    Classical minimum thresholds (Rupas):
+      Sun 6.5 | Moon 6.0 | Mars 5.0 | Mercury 7.0 | Jupiter 6.5 | Venus 5.5 | Saturn 5.0
+    """
+    # ── Dignity tables ───────────────────────────────────────────────────────
+    EXALT_DEG = {
+        "Sun": ("Mesha", 10), "Moon": ("Vrishabha", 3),
+        "Mars": ("Makara", 28), "Mercury": ("Kanya", 15),
+        "Jupiter": ("Karka", 5), "Venus": ("Meena", 27),
+        "Saturn": ("Tula", 20),
+    }
+    DEBIL_SIGN = {
+        "Sun": "Tula", "Moon": "Vrischika", "Mars": "Karka",
+        "Mercury": "Meena", "Jupiter": "Makara", "Venus": "Kanya",
+        "Saturn": "Mesha",
+    }
+    MOOL = {
+        "Sun": "Simha", "Moon": "Vrishabha", "Mars": "Mesha",
+        "Mercury": "Kanya", "Jupiter": "Dhanus", "Venus": "Tula",
+        "Saturn": "Kumbha",
+    }
+    OWN_SIGNS = {
+        "Sun": ["Simha"], "Moon": ["Karka"],
+        "Mars": ["Mesha", "Vrischika"], "Mercury": ["Mithuna", "Kanya"],
+        "Jupiter": ["Dhanus", "Meena"], "Venus": ["Vrishabha", "Tula"],
+        "Saturn": ["Makara", "Kumbha"],
+    }
+    # Friendly/neutral/enemy relations (Parashara natural)
+    FRIENDS = {
+        "Sun":  ["Moon", "Mars", "Jupiter"],
+        "Moon": ["Sun", "Mercury"],
+        "Mars": ["Sun", "Moon", "Jupiter"],
+        "Mercury": ["Sun", "Venus"],
+        "Jupiter": ["Sun", "Moon", "Mars"],
+        "Venus": ["Mercury", "Saturn"],
+        "Saturn": ["Mercury", "Venus"],
+    }
+    ENEMIES = {
+        "Sun":  ["Venus", "Saturn"],
+        "Moon": ["None"],
+        "Mars": ["Mercury"],
+        "Mercury": ["Moon"],
+        "Jupiter": ["Mercury", "Venus"],
+        "Venus": ["Sun", "Moon"],
+        "Saturn": ["Sun", "Moon", "Mars"],
+    }
+
+    # ── 5. Naisargika Bala (Natural, fixed) — in Shashtiamshas ───────────────
+    NAISARGIKA = {
+        "Sun": 60.0, "Moon": 51.43, "Venus": 42.86,
+        "Jupiter": 34.29, "Mercury": 25.71, "Mars": 17.14, "Saturn": 8.57,
+    }
+
+    # ── Sect / day-night ─────────────────────────────────────────────────────
+    DAY_PLANETS   = {"Sun", "Jupiter", "Saturn"}
+    NIGHT_PLANETS = {"Moon", "Venus", "Mars"}
+
+    # ── Dig Bala: best-house (in Shashtiamshas) ──────────────────────────────
+    # Each planet is strongest at a specific house cusp direction
+    DIG_BEST_HOUSE = {
+        "Sun": 10, "Mars": 10, "Jupiter": 10,
+        "Moon": 4,  "Venus": 4,
+        "Mercury": 1, "Saturn": 7,
+    }
+
+    CLASSICAL_PLANETS = ["Sun", "Moon", "Mars", "Mercury", "Jupiter", "Venus", "Saturn"]
+
+    scores = {}
+    tier_map = {}
+
+    for p in CLASSICAL_PLANETS:
+        d = placements.get(p, {})
+        if not d:
+            continue
+        sign = d.get("sign", "")
+
+        # ── 1. STHANA BALA ───────────────────────────────────────────────────
+        # Uccha (exaltation) component: 0-60
+        ex_sign, ex_deg = EXALT_DEG.get(p, ("", 0))
+        deg_in_s = float(d.get("deg_in_sign", 0))
+        if sign == ex_sign:
+            # Max 60 at exact exaltation degree, drops linearly to 0 at debil degree
+            arc = abs(deg_in_s - ex_deg)
+            if arc > 15:
+                arc = 30 - arc if arc < 30 else arc  # wrap
+            uccha = max(0.0, 60.0 - arc * 2.0)
+        elif DEBIL_SIGN.get(p) == sign:
+            uccha = 0.0
+        elif sign in OWN_SIGNS.get(p, []):
+            uccha = 30.0 if MOOL.get(p) == sign else 25.0
+        else:
+            # Check lord relationship
+            lord = VEDIC_RULERS.get(sign, "")
+            if lord in FRIENDS.get(p, []):
+                uccha = 15.0
+            elif lord in ENEMIES.get(p, []):
+                uccha = 5.0
+            else:
+                uccha = 10.0
+        uccha = max(0.0, min(60.0, uccha))
+
+        # Kendradi Bala: Angular/Succedent/Cadent (30/20/10 Shashtiamshas)
+        bhava = d.get("bhava", 0)  # might not be set yet
+        if bhava:
+            kendradi = {1: 30, 4: 30, 7: 30, 10: 30,
+                        2: 20, 5: 20, 8: 20, 11: 20,
+                        3: 10, 6: 10, 9: 10, 12: 10}.get(bhava, 10)
+        else:
+            kendradi = 15.0  # neutral if unknown
+
+        # Vargottama bonus (same sign D1 and D9)
+        varg_bonus = 20.0 if d.get("is_vargottama") else 0.0
+
+        sthan = uccha + kendradi + varg_bonus
+        sthan = max(5.0, min(100.0, sthan))
+
+        # ── 2. DIG BALA ──────────────────────────────────────────────────────
+        best = DIG_BEST_HOUSE.get(p, 1)
+        if bhava:
+            # Angular distance (in house units 1-12) from best house
+            h_dist = min(abs(bhava - best), 12 - abs(bhava - best))
+            dig = max(0.0, 60.0 - (h_dist * 10.0))
+        else:
+            dig = 30.0  # neutral if house unknown
+
+        # ── 3. KALA BALA ─────────────────────────────────────────────────────
+        # Nathonnatha (day/night sect strength): 30 in sect, 15 out of sect
+        if p in DAY_PLANETS:
+            natho = 30.0 if is_day else 15.0
+        elif p in NIGHT_PLANETS:
+            natho = 30.0 if not is_day else 15.0
+        else:  # Mercury — equal in both
+            natho = 22.5
+
+        # Paksha Bala (lunar phase): Moon waxing → Moon benefits, Sun benefits in daytime
+        # Simplified: +5 bonus if in-sect, already folded above
+        kala = max(10.0, min(60.0, natho))
+
+        # ── 4. CHESTA BALA ───────────────────────────────────────────────────
+        CAN_RETRO = {"Mars", "Mercury", "Jupiter", "Venus", "Saturn"}
+        if d.get("retrograde", False) and p in CAN_RETRO:
+            chesta = 60.0    # retro = max chesta (closest to Earth, most effort)
+        elif d.get("combust", False):
+            chesta = 5.0     # combust = nearly zero
+        else:
+            chesta = 30.0    # direct visible = standard
+
+        # ── 5. NAISARGIKA BALA ───────────────────────────────────────────────
+        naisargika = NAISARGIKA.get(p, 25.0)
+
+        # ── 6. DRIK BALA ─────────────────────────────────────────────────────
+        # Aspectual: benefics aspecting = +15 each, malefics = -10 each
+        # We use dignity-based classification
+        NATURAL_BENEFICS = {"Moon", "Mercury", "Jupiter", "Venus"}
+        NATURAL_MALEFICS = {"Sun", "Mars", "Saturn"}
+        drik = 0.0
+        p_lon = d.get("lon", 0)
+        for other_p, other_d in placements.items():
+            if other_p == p or other_p not in CLASSICAL_PLANETS:
+                continue
+            o_lon = other_d.get("lon", 0)
+            # Check full aspects (Parashari: 7th aspect is universal, special aspects too)
+            diff = abs(clamp360(float(p_lon)) - clamp360(float(o_lon)))
+            diff = min(diff, 360 - diff)
+            # 7th aspect (180°): all planets; Mars 4th/8th; Jupiter 5th/9th; Saturn 3rd/10th
+            aspects_to_check = [180]
+            if other_p == "Mars":    aspects_to_check += [90, 210]  # 4th & 8th (×30°)
+            if other_p == "Jupiter": aspects_to_check += [120, 240]
+            if other_p == "Saturn":  aspects_to_check += [60, 270]
+
+            for ang in aspects_to_check:
+                if abs(diff - ang) <= 5.0 or abs(diff - (360 - ang)) <= 5.0:
+                    if other_p in NATURAL_BENEFICS:
+                        drik += 15.0
+                    elif other_p in NATURAL_MALEFICS:
+                        drik -= 10.0
+                    break
+
+        drik = max(-30.0, min(30.0, drik))
+
+        # ── Sum and convert to Rupas ─────────────────────────────────────────
+        total_sha = sthan + dig + kala + chesta + naisargika + drik
+        # Typical max raw ≈ 380 Shashtiamshas; convert to Rupas (÷60)
+        total_rupas = total_sha / 60.0
+        # Classical minimum thresholds in Rupas
+        minimums = {
+            "Sun": 6.5, "Moon": 6.0, "Mars": 5.0,
+            "Mercury": 7.0, "Jupiter": 6.5, "Venus": 5.5, "Saturn": 5.0,
+        }
+        minimum = minimums.get(p, 5.0)
+
+        # Tier based on ratio to minimum threshold
+        ratio = total_rupas / minimum if minimum > 0 else 1.0
+        if ratio >= 1.8:
+            tier = "DOMINANT"
+        elif ratio >= 1.2:
+            tier = "ADEQUATE"
+        elif ratio >= 0.8:
+            tier = "WEAKENED"
+        else:
+            tier = "SEVERELY WEAKENED"
+
+        scores[p] = {
+            "total_rupas": round(total_rupas, 3),
+            "minimum_rupas": minimum,
+            "ratio": round(ratio, 3),
+            "tier": tier,
+            "sub_strengths": {
+                "sthana_sha": round(sthan, 2),
+                "dig_sha": round(dig, 2),
+                "kala_sha": round(kala, 2),
+                "chesta_sha": round(chesta, 2),
+                "naisargika_sha": round(naisargika, 2),
+                "drik_sha": round(drik, 2),
+            }
+        }
+        tier_map[p] = tier
+
+    return {
+        "planet_scores": scores,
+        "planet_tiers":  tier_map,
+        "method": "Shadbala_full_6strength"
+    }
+
+
+# Keep old name as alias so any existing code that calls shadbala_mvp still works
 def shadbala_mvp(placements: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    MVP strength score 0-100 (NOT classical full Shadbala).
-    Built so Oracle can tier: WEAKENED / BALANCED / DOMINANT.
-    """
-    score = {}
-    for p, d in placements.items():
-        base = 50.0
-        dig = d.get("dignity", "Neutral")
-        if dig == "Exalted":
-            base += 25
-        elif dig == "Own Sign":
-            base += 18
-        elif dig == "Debilitated":
-            base -= 20
-        if d.get("is_vargottama"): base += 10
-        # slight nakshatra pada emphasis (later you can refine)
-        base += (0.5 * (d.get("pada", 1) - 1))
-        score[p] = max(0.0, min(100.0, round(base, 2)))
-    return {"planet_scores": score, "method": "MVP_v1"}
+    return shadbala_v2(placements, is_day=True)
 
 
 def ashtakavarga_mvp(placements: Dict[str, Any]) -> Dict[str, Any]:
@@ -262,7 +481,7 @@ def ashtakavarga_mvp(placements: Dict[str, Any]) -> Dict[str, Any]:
 
 def calc_lon_lat(jd: float, pcode: int, flags: int = 0):
     """Wrapper for swe.calc_ut"""
-    pos, _ = swe.calc_ut(jd, pcode, flags)
+    pos = _swe_pos(swe.calc_ut(jd, pcode, flags))
     return float(pos[0]), float(pos[1])
 
 
@@ -296,7 +515,7 @@ def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_d
         }
 
     # Nodes (mean node)
-    node, _ = swe.calc_ut(jd, swe.MEAN_NODE, v_flags)
+    node = _swe_pos(swe.calc_ut(jd, swe.MEAN_NODE, v_flags))
     rahu = float(node[0])
     ketu = clamp360(rahu + 180)
     placements["Rahu"] = {"lon": rahu, "sign": zodiac_sign_v(rahu), "deg_in_sign": deg_in_sign(rahu),
@@ -331,6 +550,8 @@ def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_d
 
         # Determine house by "between previous bound and next bound"
         def bhava_index(plon: float) -> int:
+            # find nearest cusp interval
+            # Use cusp ordering; this is a simplification but works for most charts
             for i in range(12):
                 start = bounds[i - 1]
                 end = bounds[i]
@@ -374,6 +595,8 @@ def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_d
     # Yogas (basic)
     yogas = []
     if time_known and "Ascendant" in placements:
+        # extremely simplified: if kendra lord and trikona lord conjoin in same sign
+        # (you can expand to aspects/exchanges later)
         house_signs = [houses[f"Bhava_{i + 1}"]["sign"] for i in range(12)]
         kendra_lords = [VEDIC_RULERS[house_signs[0]], VEDIC_RULERS[house_signs[3]], VEDIC_RULERS[house_signs[6]],
                         VEDIC_RULERS[house_signs[9]]]
@@ -396,8 +619,14 @@ def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_d
                 yogas.append({"type": "Dhana Yoga", "sign": s, "members": sorted(list(set(ws + ts)))})
 
     # Initialize strength and predictive dicts
+    # Use full Parashara Shadbala (6-source calculation from Swiss Ephemeris)
+    # Falls back to simplified shadbala_v2 if jd/lat/lon not available
+    try:
+        shadbala_result = calculate_shadbala_full(jd, lat, lon)
+    except Exception:
+        shadbala_result = shadbala_v2(placements, is_day=(birth_dt_utc.hour >= 6 and birth_dt_utc.hour < 18))
     strength = {
-        "shadbala": _calc_shadbala_full(jd, lat, lon),
+        "shadbala": shadbala_result,
         "ashtakavarga": ashtakavarga_mvp(placements)
     }
 
@@ -413,16 +642,9 @@ def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_d
         "yogas": yogas
     }
 
-    # ── PATCH 3: _av_engine_ref for Kakshya transit wiring ───────────────────
-    # av_engine must be accessible OUTSIDE the try block for the return dict.
-    # We store a reference before the try so it persists even if the full
-    # ashtakavarga_full block partially fails.
-    _av_engine_ref = None
-
     # V2 ENHANCEMENTS - Full Ashtakavarga
     try:
         av_engine = AshtakavargaEngine(jd, lat, lon)
-        _av_engine_ref = av_engine          # ← PATCH 3: capture reference
         sav_scores = [av_engine.get_house_strength(i) for i in range(1, 13)]
 
         strength["ashtakavarga_full"] = {
@@ -440,21 +662,19 @@ def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_d
     except Exception as e:
         natal["vargas"] = {"error": str(e)}
 
-    # V2 ENHANCEMENTS - Tajaka (Vedic_engine Solar Return)
+    # V2 ENHANCEMENTS - Tajaka (Vedic_engine Solar Return) — 15-year window
     try:
         tajaka_engine = TajakaEngine(jd, lat, lon)
         current_year = datetime.now().year
-        tajaka_years = [current_year + i for i in range(5)]
+        tajaka_years = [current_year + i for i in range(15)]
         predictive["tajaka"] = [tajaka_engine.calculate_tajaka(y) for y in tajaka_years]
     except Exception as e:
         predictive["tajaka"] = {"error": str(e)}
 
-    # ── PATCH 3: Return _av_engine so orchestrator can wire Kakshya ──────────
     return {
         "natal": natal,
         "strength": strength,
-        "predictive": predictive,
-        "_av_engine": _av_engine_ref        # ← None if AV engine failed; orchestrator handles gracefully
+        "predictive": predictive
     }
 
 

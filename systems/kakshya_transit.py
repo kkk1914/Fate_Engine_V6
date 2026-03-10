@@ -18,6 +18,14 @@ AUTHORITY:
 """
 
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 import math
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Tuple
@@ -84,7 +92,7 @@ def calculate_kakshya_transits(
             if pname == "Mars" and jd > now_jd + 365.25:
                 continue
             try:
-                pos, _ = swe.calc_ut(jd, pcode, swe.FLG_SIDEREAL)
+                pos = _swe_pos(swe.calc_ut(jd, pcode, swe.FLG_SIDEREAL))
                 sid_lon = float(pos[0]) % 360
                 sign_idx = int(sid_lon // 30)
                 deg_in_sign = sid_lon % 30
@@ -149,7 +157,7 @@ def calculate_kakshya_transits(
     )
 
     return {
-        "transit_timeline": transit_timeline[:60],  # Keep ~5 years monthly
+        "transit_timeline": transit_timeline[:180],  # Keep ~15 years monthly
         "peak_windows": peak_windows,
         "ingresses": ingresses,
         "sarva_by_sign": {ZODIAC[i]: sarva_av[i] for i in range(12)},

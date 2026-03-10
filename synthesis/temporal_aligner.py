@@ -62,12 +62,14 @@ class TemporalAligner:
             aligned += self._extract_solar_returns(w)
             aligned += self._extract_lunar_returns(w)
             aligned += self._extract_profections(w)
-            aligned += self._extract_outer_transits(w)   # NEW: exact planet transit hits
+            aligned += self._extract_outer_transits(w)   # exact planet transit hits
+            aligned += self._extract_progressions(w)     # secondary prog-to-natal aspects
             aligned += self._extract_vimshottari(v)
             aligned += self._extract_tajaka(v)
             aligned += self._extract_da_yun(s)
             aligned += self._extract_liu_nian(s)
             aligned += self._extract_zr(h)
+            aligned += self._extract_firdaria(h)         # Hellenistic Firdaria periods
 
         else:
             # ── Flat structure (legacy) ───────────────────────────────────
@@ -294,7 +296,7 @@ class TemporalAligner:
             events.append({
                 "jd": antar_end_jd,
                 "system": "Vedic",
-                "technique": "Vimshottari Antardasha",
+                "technique": "Vimshottari_Antardasha",
                 "description": f"{antar_lord} Antardasha ends (within {maha_lord} Maha)",
                 "confidence": 0.85,
             })
@@ -354,7 +356,7 @@ class TemporalAligner:
             events.append({
                 "jd": self._year_to_jd(int(year)),
                 "system": "Saju",
-                "technique": "Liu Nian",
+                "technique": "Liu_Nian",
                 "description": f"Liu Nian {year}: {ln.get('stem', '?')}{ln.get('branch', '?')}",
                 "confidence": 0.72,
             })
@@ -363,25 +365,115 @@ class TemporalAligner:
     def _extract_zr(self, pred: Dict) -> List[Dict]:
         events = []
         zr = pred.get("zodiacal_releasing", {})
-        for spirit_or_fortune in ["fortune", "spirit"]:
-            for period in zr.get(spirit_or_fortune, []):
-                if not isinstance(period, dict):
+        for lot in ["fortune", "spirit"]:
+            for l1 in zr.get(lot, []):
+                if not isinstance(l1, dict):
                     continue
-                start = period.get("start_date", "")
-                if start:
-                    try:
-                        dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                        events.append({
-                            "jd": self._datetime_to_jd(dt),
-                            "system": "Hellenistic",
-                            "technique": "Zodiacal Releasing",
-                            "description": (f"ZR L1 {spirit_or_fortune.capitalize()}: "
-                                           f"{period.get('sign', '?')} "
-                                           f"({'Loosing of Bond' if period.get('is_loosing_of_bond') else ''})"),
-                            "confidence": 0.75,
-                        })
-                    except Exception:
+                # ── L1 period start ──────────────────────────────────────────
+                self._append_zr_event(events, l1, lot, "L1")
+                # ── L2 sub-periods ───────────────────────────────────────────
+                for l2 in l1.get("sub_periods_L2", []):
+                    if not isinstance(l2, dict):
                         continue
+                    self._append_zr_event(events, l2, lot, "L2")
+                    # ── L3 sub-periods ───────────────────────────────────────
+                    for l3 in l2.get("sub_periods_L3", []):
+                        if not isinstance(l3, dict):
+                            continue
+                        # Only include L3 if duration >= 3 months (avoid noise)
+                        if l3.get("years", 0) >= 0.25:
+                            self._append_zr_event(events, l3, lot, "L3")
+        return events
+
+    def _append_zr_event(self, events: list, period: dict,
+                         lot: str, level: str) -> None:
+        """Helper: convert a single ZR period dict into an aligned event."""
+        start = period.get("start_date", "")
+        if not start:
+            return
+        try:
+            dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            lob = period.get("is_loosing_of_bond") or period.get("is_lob", False)
+            # Boost confidence for Loosing of Bond (career/life peak marker)
+            confidence = 0.88 if lob else (0.75 if level == "L1" else (0.70 if level == "L2" else 0.60))
+            events.append({
+                "jd":          self._datetime_to_jd(dt),
+                "system":      "Hellenistic",
+                "technique":   "Zodiacal_Releasing",
+                "description": (
+                    f"ZR {level} {lot.capitalize()}: {period.get('sign', '?')}"
+                    f"{' ⚡ LOOSING OF BOND' if lob else ''}"
+                ),
+                "confidence":  confidence,
+            })
+        except Exception:
+            pass
+
+    def _extract_progressions(self, pred: Dict) -> List[Dict]:
+        """
+        Extract secondary progressed-to-natal aspect perfections as timed events.
+        These are stored in western.predictive.progressions.prog_natal_aspects
+        Each aspect has an 'orb' (current orb in degrees) — we estimate perfection
+        date by interpolating from today's orb at ~1 degree per year motion.
+        """
+        events = []
+        progressions = pred.get("progressions", {})
+        prog_aspects = progressions.get("prog_natal_aspects", [])
+        now = datetime.now(timezone.utc)
+
+        for aspect in prog_aspects:
+            if not isinstance(aspect, dict):
+                continue
+            try:
+                orb = float(aspect.get("orb", 99))
+                # Only include aspects within 3° of exact — tighter = more meaningful
+                if orb > 3.0:
+                    continue
+                # Progressed aspects perfect at ~1°/year; estimate perfection date
+                years_to_exact = orb  # rough: orb degrees ÷ 1°/year
+                perfection_dt = now + timedelta(days=years_to_exact * 365.25)
+                progressed  = aspect.get("progressed",   "?")
+                natal       = aspect.get("natal",         "?")
+                aspect_name = aspect.get("aspect",        "?")
+                applying    = aspect.get("applying",      True)
+                # Only future-applying aspects
+                if not applying and orb > 0.5:
+                    continue
+                events.append({
+                    "jd":         self._datetime_to_jd(perfection_dt),
+                    "system":     "Western",
+                    "technique":  "Progression",
+                    "description": f"Prog {progressed} {aspect_name} natal {natal} (orb {orb:.2f}°)",
+                    "confidence": 0.75,
+                })
+            except Exception:
+                continue
+        return events
+
+    def _extract_firdaria(self, pred: Dict) -> List[Dict]:
+        """Extract Firdaria major and sub-period start dates as timed events."""
+        events = []
+        firdaria = pred.get("firdaria", {})
+        periods = firdaria.get("periods", [])
+        for p in periods:
+            if not isinstance(p, dict):
+                continue
+            start = p.get("start_date", "")
+            if start:
+                try:
+                    dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                    planet = p.get("planet", "?")
+                    level  = p.get("level", "major")
+                    is_sub = level == "sub"
+                    events.append({
+                        "jd":          self._datetime_to_jd(dt),
+                        "system":      "Hellenistic",
+                        "technique":   "Firdaria",
+                        "description": f"Firdaria {'sub-' if is_sub else ''}period: {planet}",
+                        "confidence":  0.72 if is_sub else 0.80,
+                    })
+                except Exception:
+                    continue
         return events
 
     # ─────────────────────────────────────────────────────────────────────

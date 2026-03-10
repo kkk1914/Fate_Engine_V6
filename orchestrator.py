@@ -65,6 +65,8 @@ class FatesOrchestrator:
                        gender: str = "unspecified",
                        name: str = "Unknown",
                        output_dir: str = "./reports",
+                       lat: float = None,
+                       lon: float = None,
                        user_questions: list = None) -> str:
         """
         Generate complete master report with V2 predictive engines.
@@ -80,7 +82,7 @@ class FatesOrchestrator:
 
         # 1. Parse inputs and calculate charts (V2 with Primary Directions, Ashtakavarga, etc.)
         print("\n📊 Layer 1: Mathematical Calculations (4 systems + Vargas + Directions)...")
-        chart_data = self._calculate_charts(birth_datetime, location, gender)
+        chart_data = self._calculate_charts(birth_datetime, location, gender, lat=lat, lon=lon)
 
         print("   ✓ Western (Tropical) + Primary Directions + Solar Returns")
         print("   ✓ Vedic (Sidereal) + Full Ashtakavarga + Divisional Charts (D7,D9,D10,D12,D16,D30,D60)")
@@ -163,7 +165,8 @@ class FatesOrchestrator:
                    metadata,
                    temporal_clusters=clusters,
                    user_questions=user_questions,
-                   query_context=query_context)
+                   query_context=query_context,
+                   expert_analyses=analyses)   # Issue 3: bypass Arbiter truncation
 
         # 6. Save with timestamp
         os.makedirs(output_dir, exist_ok=True)
@@ -183,41 +186,111 @@ class FatesOrchestrator:
 
         return filepath
 
-    def _calculate_charts(self, birth_dt: str, location: str, gender: str) -> Dict:
-        """Calculate all systems with V2 mathematical engines."""
-        # Parse datetime
-        try:
-            if ' ' in birth_dt:
-                date_part, time_part = birth_dt.split(' ')
-                year, month, day = map(int, date_part.split('-'))
-                hour, minute = map(int, time_part.split(':')[:2])
-            else:
-                dt = datetime.fromisoformat(birth_dt.replace('Z', '+00:00'))
-                year, month, day = dt.year, dt.month, dt.day
-                hour, minute = dt.hour, dt.minute
-        except Exception as e:
-            raise ValueError(f"Could not parse datetime: {birth_dt}. Use format: YYYY-MM-DD HH:MM")
+    def _calculate_charts(self, birth_dt: str, location: str, gender: str, lat: float = None, lon: float = None, time_known: bool = True) -> Dict:
+        """Calculate all systems with V2 mathematical engines.
 
-        dt = datetime(year, month, day, hour, minute, 0, tzinfo=ZoneInfo("UTC"))
+        time_known=False activates birth-time-unknown mode:
+          • Houses, Ascendant, MC, house-based techniques are suppressed.
+          • Whole-sign placeholders are used for house-sensitive engines.
+          • Hellenistic (ZR, Profections) and Fixed Star Parans are skipped.
+          • All planet-only calculations (aspects, dashas, transits) still run.
+
+        The engine auto-detects unknown time when birth_dt time is "00:00" or
+        when the string contains the literal word 'unknown'.
+        """
+        # Auto-detect unknown birth time
+        _lower = birth_dt.lower()
+        if "unknown" in _lower or "00:00" in birth_dt:
+            time_known = False
+            logger.info("Birth-time-unknown mode activated — house-sensitive techniques suppressed")
+
+        # Parse datetime
+        dt = None
+        parse_error = None
+        _s = birth_dt.strip()
+
+        # Strategy 1: split on space — handles "YYYY-MM-DD HH:MM" and variants
+        if dt is None and ' ' in _s:
+            try:
+                _date, _time = _s.split(' ', 1)
+                _h, _m = map(int, _time.split(':')[:2])
+                # Try YYYY-MM-DD first, then DD-MM-YYYY, then MM-DD-YYYY
+                for _sep in ('-', '/'):
+                    parts = _date.split(_sep)
+                    if len(parts) == 3:
+                        try:
+                            _y, _mo, _d = int(parts[0]), int(parts[1]), int(parts[2])
+                            if _y > 31:                            # YYYY-MM-DD (most common)
+                                dt = datetime(_y, _mo, _d, _h, _m, 0, tzinfo=ZoneInfo("UTC"))
+                            elif _d > 31:                          # DD-MM-YYYY
+                                dt = datetime(_d, _mo, _y, _h, _m, 0, tzinfo=ZoneInfo("UTC"))
+                            elif int(parts[1]) > 12:               # MM-DD-YYYY
+                                dt = datetime(_d, _mo, _y, _h, _m, 0, tzinfo=ZoneInfo("UTC"))
+                            else:                                   # ambiguous: assume YYYY first
+                                dt = datetime(_y, _mo, _d, _h, _m, 0, tzinfo=ZoneInfo("UTC"))
+                            break
+                        except ValueError:
+                            try:                                    # try DD-MM-YYYY fallback
+                                _y2, _mo2, _d2 = int(parts[2]), int(parts[1]), int(parts[0])
+                                dt = datetime(_y2, _mo2, _d2, _h, _m, 0, tzinfo=ZoneInfo("UTC"))
+                                break
+                            except ValueError:
+                                continue
+            except Exception as e:
+                parse_error = str(e)
+
+        # Strategy 2: fromisoformat (handles "YYYY-MM-DDTHH:MM:SS", "YYYY-MM-DD", etc.)
+        if dt is None:
+            try:
+                _parsed = datetime.fromisoformat(_s.replace('Z', '+00:00'))
+                dt = _parsed.replace(tzinfo=ZoneInfo("UTC")) if _parsed.tzinfo is None else _parsed.astimezone(ZoneInfo("UTC"))
+            except Exception as e:
+                parse_error = str(e)
+
+        # Strategy 3: try common strptime formats
+        if dt is None:
+            for fmt in ("%Y-%m-%d %H:%M", "%d-%m-%Y %H:%M", "%m/%d/%Y %H:%M",
+                        "%d/%m/%Y %H:%M", "%Y/%m/%d %H:%M",
+                        "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+                try:
+                    _parsed = datetime.strptime(_s, fmt)
+                    dt = _parsed.replace(tzinfo=ZoneInfo("UTC"))
+                    break
+                except ValueError:
+                    continue
+
+        if dt is None:
+            raise ValueError(
+                f"Could not parse birth date/time: '{birth_dt}'\n"
+                f"  Please use format: YYYY-MM-DD HH:MM  (e.g. 1990-03-15 14:30)\n"
+                f"  Also accepted: DD-MM-YYYY HH:MM, DD/MM/YYYY HH:MM"
+            )
+
+        # Extract bare components used throughout _calculate_charts
+        year   = dt.year
+        month  = dt.month
+        day    = dt.day
+        hour   = dt.hour
+        minute = dt.minute
 
         # Geocoding
-        try:
-            from geopy.geocoders import Nominatim
-            from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
-
-            geolocator = Nominatim(user_agent="fates_engine_v2/2.0")
-            location_obj = geolocator.geocode(location, timeout=10)
-
-            if location_obj:
-                lat, lon = location_obj.latitude, location_obj.longitude
-                print(f"   📍 Geocoded '{location}' → {lat:.4f}, {lon:.4f}")
-            else:
-                raise ValueError(f"Location not found: '{location}'")
-
-        except ImportError:
-            raise ImportError("geopy required. Install: pip install geopy")
-        except (GeocoderTimedOut, GeocoderUnavailable) as e:
-            raise ConnectionError(f"Geocoding error: {e}")
+        if lat is not None and lon is not None:
+            print(f"   📍 Using provided coordinates → {lat:.4f}, {lon:.4f}")
+        else:
+            try:
+                from geopy.geocoders import Nominatim
+                from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
+                geolocator = Nominatim(user_agent="fates_engine_v2/2.0")
+                location_obj = geolocator.geocode(location, timeout=10)
+                if location_obj:
+                    lat, lon = location_obj.latitude, location_obj.longitude
+                    print(f"   📍 Geocoded '{location}' → {lat:.4f}, {lon:.4f}")
+                else:
+                    raise ValueError(f"Location not found: '{location}'")
+            except ImportError:
+                raise ImportError("geopy required. Install: pip install geopy")
+            except (GeocoderTimedOut, GeocoderUnavailable) as e:
+                raise ConnectionError(f"Geocoding error: {e}")
 
         # Julian Day
         jd = ephe.julian_day(dt)
@@ -228,11 +301,11 @@ class FatesOrchestrator:
 
         # WESTERN (V2: Primary Directions + Solar Returns + Lunar Returns + Syzygy + Dignities)
         print("   → Calculating Western (Primary Directions)...")
-        western = self.western_engine.calculate(jd, lat, lon, True, year)
+        western = self.western_engine.calculate(jd, lat, lon, time_known, year)
 
-        # Add Primary Directions (Gold Standard)
+        # Add Primary Directions (Gold Standard) — 15-year window, converse included
         pd_engine = PrimaryDirections(jd, lat, lon)
-        primary_dirs = pd_engine.get_critical_directions(years_ahead=5)
+        primary_dirs = pd_engine.get_critical_directions(years_ahead=15)
         western["predictive"]["primary_directions"] = primary_dirs
 
         print("   → Validating Essential Dignities...")
@@ -265,11 +338,11 @@ class FatesOrchestrator:
             western['natal']['dignities'] = {}
             western['natal']['receptions'] = {}
 
-        # Lunar Returns (Phase 3)
-        print("   → Calculating Lunar Returns...")
+        # Lunar Returns (15-year window)
+        print("   → Calculating Lunar Returns (15yr)...")
         moon_lon = western['natal']['placements']['Moon']['longitude']
         western['predictive']['lunar_returns'] = self.western_engine.calculate_lunar_returns(
-            jd, moon_lon, years=5
+            jd, moon_lon, years=15
         )
 
         # Pre-natal Syzygy (Phase 3)
@@ -277,10 +350,10 @@ class FatesOrchestrator:
         syzygy_engine = SyzygyEngine(jd)
         western['natal']['syzygy'] = syzygy_engine.calculate_syzygy()
 
-        # Solar Returns
+        # Solar Returns — 15-year window
         sr_engine = SolarReturnEngine(jd, lat, lon)
         current_year = datetime.now().year
-        solar_returns = sr_engine.get_return_series(current_year, years=5)
+        solar_returns = sr_engine.get_return_series(current_year, years=15)
         western["predictive"]["solar_returns"] = solar_returns
         western["predictive"]["solar_return_analysis"] = [
             sr_engine.analyze_return_vs_natal(sr) for sr in solar_returns
@@ -289,7 +362,7 @@ class FatesOrchestrator:
         # VEDIC (V2: Full Ashtakavarga + Divisional Charts + Tajaka)
         print("   → Calculating Vedic (Ashtakavarga + Vargas)...")
         try:
-            vedic = calculate_vedic(jd, lat, lon, True, dt)
+            vedic = calculate_vedic(jd, lat, lon, time_known, dt)
         except Exception as e:
             print(f"   ⚠️  Vedic calculation error: {e}")
             vedic = {"natal": {"placements": {}}, "predictive": {}, "strength": {}}
@@ -298,17 +371,18 @@ class FatesOrchestrator:
         print("   → Calculating Kakshya Transit Quality...")
         try:
             from systems.kakshya_transit import calculate_kakshya_transits
-            av_engine = vedic.get("_av_engine")  # see PATCH 3 below
-            if av_engine:
-                bhinna = av_engine.bhinna_ashtakavarga
-                sarva = av_engine.sarva_ashtakavarga
-            else:
-                # Fall back to vedic strength dict if engine not stored
+            # Pull real bhinna/sarva from strength["ashtakavarga_full"]
+            # vedic.py never stored _av_engine on the return dict; this is the correct path
+            av_full = vedic.get("strength", {}).get("ashtakavarga_full", {})
+            bhinna  = av_full.get("bhinna", {})
+            sarva   = av_full.get("sarva",  [20] * 12)
+            if not bhinna or not isinstance(bhinna, dict):
                 bhinna = {}
+            if not sarva or not isinstance(sarva, list) or len(sarva) != 12:
                 sarva = [20] * 12
             kakshya_data = calculate_kakshya_transits(
                 natal_jd=jd, lat=lat, lon=lon,
-                bhinna_av=bhinna, sarva_av=sarva, years_ahead=5
+                bhinna_av=bhinna, sarva_av=sarva, years_ahead=15
             )
             vedic["predictive"]["kakshya_transits"] = kakshya_data
         except Exception as e:
@@ -318,30 +392,39 @@ class FatesOrchestrator:
         # SAJU (Bazi)
         print("   → Calculating Saju (Four Pillars)...")
         try:
-            saju = calculate_bazi(dt, True, gender, jd, lon=lon)
+            saju = calculate_bazi(dt, time_known, gender, jd, lon=lon)
         except ImportError:
             saju = {"natal": {}, "strength": {}, "predictive": {}}
 
         # Fixed Star Parans (Phase 4 — full heliacal + natal parans)
-        print("   → Calculating Fixed Star Parans...")
-        try:
-            from core.fixed_star_parans import calculate_parans
-            parans_data = calculate_parans(jd, lat, lon, time_known=True)
-            western["natal"]["fixed_stars"] = parans_data.get("conjunctions", [])  # replaces basic fixed_stars
-            western["natal"]["parans"] = parans_data.get("natal_parans", [])
-            western["natal"]["heliacal_events"] = parans_data.get("heliacal_events", [])
-            western["natal"]["star_windows"] = parans_data.get("five_year_windows", [])
-            western["natal"]["significant_stars"] = parans_data.get("significant_stars", [])
-        except Exception as e:
-            print(f"   ⚠️  Parans error: {e}")
+        # Requires accurate birth time for RAMC horizon calculation
+        if time_known:
+            print("   → Calculating Fixed Star Parans...")
+            try:
+                from core.fixed_star_parans import calculate_parans
+                parans_data = calculate_parans(jd, lat, lon, time_known=True)
+                western["natal"]["fixed_stars"] = parans_data.get("conjunctions", [])
+                western["natal"]["parans"] = parans_data.get("natal_parans", [])
+                western["natal"]["heliacal_events"] = parans_data.get("heliacal_events", [])
+                western["natal"]["star_windows"] = parans_data.get("five_year_windows", [])
+                western["natal"]["significant_stars"] = parans_data.get("significant_stars", [])
+            except Exception as e:
+                print(f"   ⚠️  Parans error: {e}")
+                western["natal"].setdefault("fixed_stars", [])
+                western["natal"]["parans"] = []
+                western["natal"]["heliacal_events"] = []
+                western["natal"]["star_windows"] = []
+        else:
+            print("   ℹ️  Skipping Fixed Star Parans (birth time unknown — RAMC required)")
             western["natal"].setdefault("fixed_stars", [])
             western["natal"]["parans"] = []
             western["natal"]["heliacal_events"] = []
             western["natal"]["star_windows"] = []
+            western["natal"]["significant_stars"] = []
 
         # HELLENISTIC
         print("   → Calculating Hellenistic (Profections + ZR)...")
-        hellenistic = self.hellenistic_engine.calculate(jd, lat, lon, True, year)
+        hellenistic = self.hellenistic_engine.calculate(jd, lat, lon, time_known, year)
 
         # Dodecatemoria (Phase 5)
         print("   → Calculating Dodecatemoria (12th parts)...")
@@ -370,14 +453,20 @@ class FatesOrchestrator:
                 "lat": lat,
                 "lon": lon,
                 "birth_year": year,
-                "birth_datetime": dt.isoformat()
+                "birth_datetime": dt.isoformat(),
+                "time_known": time_known,
             },
             "lord_validations": lord_validations,
             "predictive": {
                 "western": western.get("predictive", {}),
                 "vedic": vedic.get("predictive", {}),
                 "saju": saju.get("predictive", {}),
-                "hellenistic": hellenistic.get("predictive", {})
+                "hellenistic": {
+                    **hellenistic.get("predictive", {}),
+                    "zodiacal_releasing": hellenistic.get("zodiacal_releasing", {}),
+                    "firdaria":           hellenistic.get("firdaria", {}),
+                    "alcocoden":          hellenistic.get("alcocoden", {}),
+                }
             }
         }
 

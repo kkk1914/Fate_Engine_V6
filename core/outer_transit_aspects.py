@@ -52,6 +52,14 @@ from typing import Dict, List, Optional, Tuple
 
 import swisseph as swe
 
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,7 +91,7 @@ STEP_DAYS = 1.0   # daily scan step
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _planet_lon(jd: float, code: int) -> float:
-    pos, _ = swe.calc_ut(jd, code, swe.FLG_SWIEPH)
+    pos = _swe_pos(swe.calc_ut(jd, code, swe.FLG_SWIEPH))
     return float(pos[0]) % 360.0
 
 

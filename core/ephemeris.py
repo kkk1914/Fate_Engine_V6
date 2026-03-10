@@ -23,8 +23,15 @@ class EphemerisEngine:
         )
 
     def planet_longitude(self, jd: float, planet: int, flags: int = 0) -> Tuple[float, float]:
-        """Get planet longitude and latitude."""
-        pos, _ = swe.calc_ut(jd, planet, flags)
+        """Get planet longitude and latitude.
+
+        pyswisseph API changed between versions:
+          - Old (<2.10): returns (positions_tuple, retflag) → unpack as pos, _
+          - New (>=2.10): returns flat 6-tuple (lon, lat, dist, v_lon, v_lat, v_dist)
+        We handle both by checking whether the first element is itself a sequence.
+        """
+        result = swe.calc_ut(jd, planet, flags)
+        pos = result[0] if isinstance(result[0], (list, tuple)) else result
         return float(pos[0]), float(pos[1])
 
     def houses(self, jd: float, lat: float, lon: float, hsys: bytes = b'P') -> Tuple[List[float], List[float]]:
@@ -37,14 +44,18 @@ class EphemerisEngine:
     def fixstar(self, star: str, jd: float) -> Optional[float]:
         """Get fixed star longitude."""
         try:
-            (lon, lat, dist, _), _ = swe.fixstar2_ut(star, jd)
-            return float(lon)
+            result = swe.fixstar2_ut(star, jd)
+            # Old API: ((lon, lat, dist, ...), retflag)
+            # New API: flat (lon, lat, dist, ...)
+            coords = result[0] if isinstance(result[0], (list, tuple)) else result
+            return float(coords[0])
         except Exception:
             return None
 
     def is_retrograde(self, jd: float, planet: int) -> bool:
         """Check if planet is retrograde."""
-        pos, _ = swe.calc_ut(jd, planet, swe.FLG_SPEED)
+        result = swe.calc_ut(jd, planet, swe.FLG_SPEED)
+        pos = result[0] if isinstance(result[0], (list, tuple)) else result
         return float(pos[3]) < 0
 
 # Global instance

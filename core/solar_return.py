@@ -1,5 +1,13 @@
 """Solar Return calculations with precession correction."""
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Tuple, List
 
@@ -14,7 +22,7 @@ class SolarReturnEngine:
 
     def _get_natal_sun(self) -> float:
         """Get natal Sun longitude."""
-        pos, _ = swe.calc_ut(self.natal_jd, swe.SUN)
+        pos = _swe_pos(swe.calc_ut(self.natal_jd, swe.SUN))
         return pos[0]
 
     def calculate_return(self, year: int) -> Dict[str, Any]:
@@ -32,7 +40,7 @@ class SolarReturnEngine:
 
         # Find exact Sun return to natal longitude
         for _ in range(20):
-            pos, _ = swe.calc_ut(jd_guess, swe.SUN)
+            pos = _swe_pos(swe.calc_ut(jd_guess, swe.SUN))
             diff = (pos[0] - self.natal_sun) % 360
             if diff > 180:
                 diff -= 360
@@ -54,7 +62,7 @@ class SolarReturnEngine:
                           ("Mercury", swe.MERCURY), ("Venus", swe.VENUS),
                           ("Mars", swe.MARS), ("Jupiter", swe.JUPITER),
                           ("Saturn", swe.SATURN)]:
-            pos, _ = swe.calc_ut(sr_jd, code)
+            pos = _swe_pos(swe.calc_ut(sr_jd, code))
             planets[name] = {
                 "lon": pos[0],
                 "sign": self._get_sign(pos[0]),
@@ -121,7 +129,7 @@ class SolarReturnEngine:
                           (swe.MERCURY, "Mercury"), (swe.VENUS, "Venus"),
                           (swe.MARS, "Mars"), (swe.JUPITER, "Jupiter"),
                           (swe.SATURN, "Saturn")]:
-            pos, _ = swe.calc_ut(self.natal_jd, code)
+            pos = _swe_pos(swe.calc_ut(self.natal_jd, code))
             natal_planets[name] = pos[0]
 
         aspects = []
@@ -143,6 +151,7 @@ class SolarReturnEngine:
                         })
 
         return {
+            "year": sr_data.get("year"),
             "aspects_to_natal": aspects,
             "sr_asc_natal_house": sr_data.get("dominant_house"),
             "emphasized_natal_house": sr_data.get("dominant_house")

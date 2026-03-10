@@ -38,6 +38,14 @@ import swisseph as swe
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
 
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixed Star Catalogue — (swename, keywords, nature, magnitude)
 # swe.fixstar() name strings are case-sensitive to the star catalogue files.
@@ -348,7 +356,7 @@ class FixedStarParans:
         Bright stars (mag < 2.0) only.
         """
         events = []
-        sun_pos, _ = swe.calc_ut(self.jd, swe.SUN)
+        sun_pos = _swe_pos(swe.calc_ut(self.jd, swe.SUN))
         sun_lon = float(sun_pos[0])
 
         for s_name, s_data in {k: v for k, v in stars.items()
@@ -468,8 +476,8 @@ class FixedStarParans:
         positions = {}
         for name, code in PARAN_PLANETS.items():
             try:
-                ecl, _ = swe.calc_ut(self.jd, code)
-                eq,  _ = swe.calc_ut(self.jd, code, swe.FLG_EQUATORIAL)
+                ecl = _swe_pos(swe.calc_ut(self.jd, code))
+                eq = _swe_pos(swe.calc_ut(self.jd, code, swe.FLG_EQUATORIAL))
                 positions[name] = {
                     "lon": float(ecl[0]),
                     "lat": float(ecl[1]),
@@ -487,7 +495,7 @@ class FixedStarParans:
             try:
                 # swe.fixstar(name, jd) → (pos[6], retval)
                 # pos[0]=ecl_lon, pos[1]=ecl_lat
-                star_pos, _ = swe.fixstar(cat["swename"], self.jd)
+                star_pos = _swe_pos(swe.fixstar(cat["swename"], self.jd))
                 ecl_lon = float(star_pos[0])
                 ecl_lat = float(star_pos[1])
 

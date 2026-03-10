@@ -1,5 +1,13 @@
 """Pre-natal Syzygy (Eclipse/Lunation) calculation."""
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 from datetime import datetime
 from typing import Dict, Any
 
@@ -41,8 +49,8 @@ class SyzygyEngine:
 
             def phase_angle(jd: float) -> float:
                 """Moon elongation from Sun: 0°=New, 180°=Full. Range [0, 360)."""
-                sun, _ = swe.calc_ut(jd, swe.SUN)
-                moon, _ = swe.calc_ut(jd, swe.MOON)
+                sun = _swe_pos(swe.calc_ut(jd, swe.SUN))
+                moon = _swe_pos(swe.calc_ut(jd, swe.MOON))
                 return (moon[0] - sun[0]) % 360.0
 
             def find_exact_phase(jd_lo: float, jd_hi: float, target: float) -> float:
@@ -117,8 +125,8 @@ class SyzygyEngine:
             exact_jd, syzygy_type = max(candidates, key=lambda x: x[0])
 
             # Get precise positions at exact moment
-            sun_pos,  _ = swe.calc_ut(exact_jd, swe.SUN)
-            moon_pos, _ = swe.calc_ut(exact_jd, swe.MOON)
+            sun_pos = _swe_pos(swe.calc_ut(exact_jd, swe.SUN))
+            moon_pos = _swe_pos(swe.calc_ut(exact_jd, swe.MOON))
 
             # Format datetime
             y, mo, d, h, mi, s = swe.revjul(exact_jd)

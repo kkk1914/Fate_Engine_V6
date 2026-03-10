@@ -15,6 +15,14 @@ Minimum required for full strength per Parashara:
   Sun=6.5, Moon=6.0, Mars=5.0, Mercury=7.0, Jupiter=6.5, Venus=5.5, Saturn=5.0 Rupas.
 """
 import swisseph as swe
+
+def _swe_pos(result):
+    """Normalise pyswisseph calc_ut/fixstar return across API versions.
+    Old (<2.10): returns (positions_tuple, retflag) — result[0] is a tuple.
+    New (>=2.10): returns flat 6-tuple directly   — result[0] is a float.
+    """
+    return result[0] if isinstance(result[0], (list, tuple)) else result
+
 import math
 from typing import Dict, Any
 
@@ -81,7 +89,7 @@ def calculate_shadbala(jd: float, lat: float, lon: float) -> Dict[str, Any]:
     # Get sidereal positions
     positions = {}
     for name, code in PLANETS_SH.items():
-        pos, _ = swe.calc_ut(jd, code, swe.FLG_SIDEREAL | swe.FLG_SPEED)
+        pos = _swe_pos(swe.calc_ut(jd, code, swe.FLG_SIDEREAL | swe.FLG_SPEED))
         sid_lon = float(pos[0]) % 360
         positions[name] = {
             "sid_lon": sid_lon,

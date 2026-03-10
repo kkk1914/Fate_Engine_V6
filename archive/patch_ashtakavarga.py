@@ -159,7 +159,7 @@ def apply_patch():
     import re
 
     try:
-        with open("core/vedic_engines.py", "r") as f:
+        with open("../core/vedic_engines.py", "r") as f:
             content = f.read()
     except FileNotFoundError:
         print("❌ core/vedic_engines.py not found. Run from project root.")
@@ -226,11 +226,11 @@ def apply_patch():
     new_content = content[:match.start()] + replacement_body + content[match.start(2):]
 
     # Backup original
-    with open("core/vedic_engines.py.bak", "w") as f:
+    with open("../core/vedic_engines.py.bak", "w") as f:
         f.write(content)
     print("   Backup saved: core/vedic_engines.py.bak")
 
-    with open("core/vedic_engines.py", "w") as f:
+    with open("../core/vedic_engines.py", "w") as f:
         f.write(new_content)
 
     print("✅ core/vedic_engines.py patched successfully")
