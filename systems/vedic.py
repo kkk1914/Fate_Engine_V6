@@ -2,6 +2,8 @@
 import swisseph as swe
 from datetime import datetime, timezone
 from typing import Dict, Any, List
+from core.ayanamsa import AyanamsaManager
+from config import settings
 
 # Import shared utilities
 from systems.western import clamp360
@@ -486,7 +488,7 @@ def calc_lon_lat(jd: float, pcode: int, flags: int = 0):
 
 
 def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_dt_utc: datetime) -> Dict[str, Any]:
-    swe.set_sid_mode(swe.SIDM_LAHIRI)
+    AyanamsaManager.set_ayanamsa(settings.ayanamsa)
     v_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
 
     placements = {}
@@ -592,31 +594,16 @@ def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_d
         dasha["antar_remaining_years"] = 0
         dasha["antar_total_years"] = 0
 
-    # Yogas (basic)
+    # Yogas — Full classical detection (30+ yoga types)
     yogas = []
     if time_known and "Ascendant" in placements:
-        # extremely simplified: if kendra lord and trikona lord conjoin in same sign
-        # (you can expand to aspects/exchanges later)
-        house_signs = [houses[f"Bhava_{i + 1}"]["sign"] for i in range(12)]
-        kendra_lords = [VEDIC_RULERS[house_signs[0]], VEDIC_RULERS[house_signs[3]], VEDIC_RULERS[house_signs[6]],
-                        VEDIC_RULERS[house_signs[9]]]
-        trikona_lords = [VEDIC_RULERS[house_signs[0]], VEDIC_RULERS[house_signs[4]], VEDIC_RULERS[house_signs[8]]]
-        wealth_lords = [VEDIC_RULERS[house_signs[1]], VEDIC_RULERS[house_signs[10]]]
-
-        occ = {}
-        for p, d in placements.items():
-            s = d.get("sign")
-            if s:
-                occ.setdefault(s, []).append(p)
-
-        for s, ps in occ.items():
-            ks = list(set(kendra_lords).intersection(ps))
-            ts = list(set(trikona_lords).intersection(ps))
-            ws = list(set(wealth_lords).intersection(ps))
-            if ks and ts:
-                yogas.append({"type": "Raja Yoga", "sign": s, "members": sorted(list(set(ks + ts)))})
-            if ws and ts:
-                yogas.append({"type": "Dhana Yoga", "sign": s, "members": sorted(list(set(ws + ts)))})
+        try:
+            from core.yogas import detect_all_yogas
+            yogas = detect_all_yogas(placements, houses)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Yoga detection error: {e}")
+            yogas = []
 
     # Initialize strength and predictive dicts
     # Use full Parashara Shadbala (6-source calculation from Swiss Ephemeris)

@@ -43,6 +43,10 @@ CROSS-SYSTEM MAPPINGS (use these to unify language):
 - Hellenistic Time Lord ~= Vedic Dasha lord ~= Saju current Da Yun stem (annual ruler)
 - Western Jupiter transit ~= Vedic Jupiter Dasha ~= Saju favorable Wu Xing (expansion timing)
 
+SHADBALA GATE RULE:
+- If a planet's Shadbala is SEVERELY WEAKENED (below minimum Rupas) AND no cancellation yoga (Neecha Bhanga Raja Yoga, debilitation cancellation) is present in the Vedic data, any prediction primarily driven by that planet MUST be downgraded by one confidence tier. State the weakness explicitly: "Mars is severely weakened in Shadbala; this career prediction requires conscious effort and external support."
+- Do NOT predict "near-certain" outcomes from severely weakened planets without explicit cancellation justification.
+
 SYNTHESIS DEPTH REQUIREMENTS:
 - Every consensus_point MUST cite specific system evidence with dates where available
 - critical_periods MUST have ISO date ranges, not vague year references
@@ -150,6 +154,7 @@ OUTPUT FORMAT: Strict JSON only. No markdown. No preamble."""
             user_prompt=prompt,
             output_schema=schema,
             model=settings.arbiter_model,
+            temperature=0.0,
             reasoning_effort="high",
             max_tokens=8000
         )
@@ -175,10 +180,31 @@ OUTPUT FORMAT: Strict JSON only. No markdown. No preamble."""
         Temporal clusters and convergences passed as actual structured data.
         """
 
+        def _extract_timing_dates(text: str) -> str:
+            """Regex-extract date patterns from expert text before truncation.
+            Preserves the highest-value timing data that would otherwise be lost."""
+            import re
+            date_patterns = re.findall(
+                r'(?:exact|entry|exit|from|until|peak|window)[^\n]{0,120}(?:\d{4}-\d{2}-\d{2})[^\n]{0,60}',
+                text, re.IGNORECASE
+            )
+            if not date_patterns:
+                return ""
+            unique = list(dict.fromkeys(date_patterns))[:15]  # dedupe, cap at 15
+            return "\n\nTIMING DATA PRESERVED:\n" + "\n".join(f"  • {d.strip()}" for d in unique)
+
         def truncate(text, max_len=4500):
             if not text or len(text) <= max_len:
                 return text
-            return text[:max_len] + f"\n\n[... {len(text) - max_len} chars truncated]"
+            # Extract timing dates BEFORE truncation
+            timing_block = _extract_timing_dates(text)
+            # Find the last sentence boundary before max_len to avoid mid-sentence cuts
+            cut = text[:max_len]
+            last_period = max(cut.rfind('. '), cut.rfind('.\n'), cut.rfind('.\r'))
+            if last_period > max_len * 0.8:  # only use boundary if it preserves >80%
+                cut = text[:last_period + 1]
+            omitted = len(text) - len(cut)
+            return cut + timing_block + f"\n\n[... {omitted} chars truncated]"
 
         def truncate_western(text):
             # Western carries the most predictive date evidence (transit entry/exit windows,
@@ -187,6 +213,14 @@ OUTPUT FORMAT: Strict JSON only. No markdown. No preamble."""
 
         def truncate_vedic(text):
             # Vedic carries dasha sequences, ashtakavarga scores, yogas — raise cap.
+            return truncate(text, max_len=5500)
+
+        def truncate_saju(text):
+            # Saju carries elemental analysis, spirit stars, Da Yun — raise from default 4500.
+            return truncate(text, max_len=5500)
+
+        def truncate_hellenistic(text):
+            # Hellenistic carries ZR L2 periods, profections, LOB windows — raise from default 4500.
             return truncate(text, max_len=5500)
 
         western     = next((a for a in analyses if a.get("system") == "Western"),     {})
@@ -204,7 +238,8 @@ OUTPUT FORMAT: Strict JSON only. No markdown. No preamble."""
         if temporal_clusters:
             cluster_block = "\n=== TEMPORAL STORM WINDOWS (algorithmically computed multi-system convergences) ===\n"
             cluster_block += "These are the highest-authority timing data. Reference specific windows by date in your synthesis.\n"
-            for i, c in enumerate(temporal_clusters[:8], 1):
+            # Top 10 with full detail
+            for i, c in enumerate(temporal_clusters[:10], 1):
                 start  = c.get("start_date", c.get("start", "?"))
                 end    = c.get("end_date",   c.get("end",   "?"))
                 score  = c.get("convergence_score", 0)
@@ -220,6 +255,14 @@ OUTPUT FORMAT: Strict JSON only. No markdown. No preamble."""
                     f"{n_sys} systems: {sys_l}\n"
                     f"       techniques: {events}\n"
                 )
+            # Next 5 as one-line summaries (preserves windows without bloating prompt)
+            for i, c in enumerate(temporal_clusters[10:15], 11):
+                start = c.get("start_date", c.get("start", "?"))
+                end   = c.get("end_date",   c.get("end",   "?"))
+                score = c.get("convergence_score", 0)
+                label = c.get("confidence_label", "?")
+                sys_l = ", ".join(c.get("systems_involved", ["?"]))
+                cluster_block += f"  [{i}] {start}–{end} | score={score:.2f} | {label} | {sys_l}\n"
             cluster_block += "=== END STORM WINDOWS ===\n"
 
         # ── Convergences — top items as structured data ───────────────────────
@@ -229,7 +272,7 @@ OUTPUT FORMAT: Strict JSON only. No markdown. No preamble."""
             for cv in convergences[:6]:
                 theme   = cv.get("theme", cv.get("type", "?"))
                 systems = ", ".join(cv.get("systems", []))
-                desc    = cv.get("description", cv.get("detail", ""))[:120]
+                desc    = cv.get("description", cv.get("detail", ""))[:250]
                 conv_block += f"  • {theme} [{systems}]: {desc}\n"
             conv_block += "=== END CONVERGENCES ===\n"
 
@@ -239,7 +282,7 @@ OUTPUT FORMAT: Strict JSON only. No markdown. No preamble."""
             contrad_block = f"\n=== SYSTEM CONTRADICTIONS ({len(contradictions)} flagged) ===\n"
             for ct in contradictions[:4]:
                 systems = ", ".join(ct.get("systems", []))
-                tension = ct.get("tension", ct.get("description", ""))[:120]
+                tension = ct.get("tension", ct.get("description", ""))[:250]
                 contrad_block += f"  • [{systems}]: {tension}\n"
             contrad_block += "=== END CONTRADICTIONS ===\n"
 
@@ -263,13 +306,13 @@ OUTPUT FORMAT: Strict JSON only. No markdown. No preamble."""
 {truncate_vedic(vedic.get("analysis", "No analysis"))}
 
 === SAJU (Bazi) ===
-{truncate(saju.get("analysis", "No analysis"))}
+{truncate_saju(saju.get("analysis", "No analysis"))}
 
 === HELLENISTIC (Ancient) ===
-{truncate(hellenistic.get("analysis", "No analysis"))}
+{truncate_hellenistic(hellenistic.get("analysis", "No analysis"))}
 {cluster_block}{conv_block}{contrad_block}
 Chart basics: Sun {sun_sign}, Moon {moon_sign}, Asc {asc_sign}
-{question_block}
+{self._format_degradation_flags(chart_data)}{question_block}
 SYNTHESIS REQUIREMENTS:
 1. consensus_points: minimum 6 points. Each MUST cite specific evidence from 2+ systems with dates.
    For any transit in consensus_points, include the entry AND exit date if available from the Western analysis.
@@ -298,6 +341,18 @@ planet. When the same planet is flagged as maltreated by an out-of-sect malefic 
 a difficult transit in Western/Vedic, treat this as a HIGH-ALERT convergence.
 
 Output valid JSON matching the required schema exactly."""
+
+    @staticmethod
+    def _format_degradation_flags(chart_data: Dict) -> str:
+        """Inject system degradation warnings so the Arbiter knows which systems are missing."""
+        flags = chart_data.get("degradation_flags", {})
+        if not flags:
+            return ""
+        lines = ["\n⚠️  SYSTEM DEGRADATION — these systems returned incomplete data:"]
+        for system, reason in flags.items():
+            lines.append(f"  • {system}: {reason}")
+        lines.append("DO NOT claim cross-system convergence involving degraded systems.\n")
+        return "\n".join(lines) + "\n"
 
     def _fallback_reconciliation(self, analyses: List[Dict],
                                   convergences: List[Dict] = None,

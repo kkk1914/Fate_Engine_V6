@@ -1,6 +1,9 @@
 """Western Astrology Expert."""
 from experts.gateway import gateway
 from config import settings
+from graph.rule_querier import get_rule_querier
+from experts.exemplars import select_exemplars
+from experts.ensemble import ensemble_generate
 
 class WesternExpert:
     """Expert in Tropical/Western astrology."""
@@ -43,13 +46,39 @@ class WesternExpert:
 
     def analyze(self, chart_data: dict, mode: str = "natal", user_questions: list = None) -> dict:
         prompt = self._question_prefix(user_questions) + self._build_prompt(chart_data, mode)
+        # Inject mandatory house lord reference (prevents hallucinated lords)
+        lord_ref = chart_data.get("_house_lord_reference_block", "")
+        if lord_ref:
+            prompt = lord_ref + "\n\n" + prompt
+        # Inject Neo4j graph rules if available
+        graph_rules = get_rule_querier().get_expert_rules("Western", chart_data)
+        if graph_rules:
+            prompt = prompt + "\n\n" + graph_rules
+        # Inject few-shot exemplars for interpretation quality
+        exemplar_block = select_exemplars("Western", chart_data)
+        if exemplar_block:
+            prompt = prompt + "\n\n" + exemplar_block
+        # Inject cross-system convergence summary from Validation Matrix
+        conv_summary = chart_data.get("validation", {}).get("convergence_summary", "")
+        if conv_summary:
+            prompt = prompt + "\n\n" + conv_summary
 
-        response = gateway.generate(
-            system_prompt=self.SYSTEM_PROMPT,
-            user_prompt=prompt,
-            model=settings.western_expert_model,
-            reasoning_effort="high"
-        )
+        if settings.ensemble_mode:
+            response = ensemble_generate(
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=prompt,
+                model=settings.western_expert_model,
+                max_tokens=3000,
+            )
+        else:
+            response = gateway.generate(
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=prompt,
+                model=settings.western_expert_model,
+                max_tokens=3000,
+                temperature=0.0,
+                reasoning_effort="high",
+            )
 
         return {
             "system": "Western",

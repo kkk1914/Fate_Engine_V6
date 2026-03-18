@@ -1,5 +1,7 @@
 """Vedic V2 Mathematical Engines (Ashtakavarga & Divisional Charts)."""
 import swisseph as swe
+from core.ayanamsa import AyanamsaManager
+from config import settings
 
 def _swe_pos(result):
     """Normalise pyswisseph calc_ut/fixstar return across API versions.
@@ -33,7 +35,7 @@ class AshtakavargaEngine:
         self.sarva_ashtakavarga = self._calc_sarva()
 
     def _get_positions(self) -> Dict[str, int]:
-        swe.set_sid_mode(swe.SIDM_LAHIRI)
+        AyanamsaManager.set_ayanamsa(settings.ayanamsa)
         positions = {}
         for name, code in [("Sun", swe.SUN), ("Moon", swe.MOON),
                            ("Mars", swe.MARS), ("Mercury", swe.MERCURY),

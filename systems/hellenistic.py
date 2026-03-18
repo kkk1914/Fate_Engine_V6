@@ -82,6 +82,9 @@ class HellenisticEngine:
         # Alcocoden (planet that "gives years" — dispositor of the Hyleg)
         alcocoden = self._calculate_alcocoden(jd, asc_lon, sun_lon, moon_lon, is_day, hyleg)
 
+        # Sect analysis (day/night chart planet classification)
+        sect = self._compute_sect(jd, is_day, asc_lon)
+
         return {
             "lots": {
                 "fortune": {
@@ -106,6 +109,7 @@ class HellenisticEngine:
             "predominator": self._find_predominator(asc_lon, sun_lon, moon_lon, is_day),
             "bonifications": bonifications,
             "dodecatemoria": dodecatemoria,
+            "sect": sect,
         }
 
     def _is_day_chart(self, asc: float, sun: float) -> bool:
@@ -115,6 +119,129 @@ class HellenisticEngine:
         """
         diff = (sun - asc) % 360
         return 0 < diff < 180
+
+    def _compute_sect(self, jd: float, is_day: bool, asc_lon: float) -> Dict[str, Any]:
+        """Compute Hellenistic Sect analysis.
+
+        Sect is THE foundational concept of Hellenistic astrology that
+        determines which planets are most benefic/malefic for this chart.
+
+        Day chart:
+          - Sect light: Sun  |  Sect benefic: Jupiter  |  Sect malefic: Saturn
+          - Out-of-sect light: Moon  |  Out-of-sect benefic: Venus  |  Malefic: Mars
+
+        Night chart:
+          - Sect light: Moon  |  Sect benefic: Venus  |  Sect malefic: Mars
+          - Out-of-sect light: Sun  |  Out-of-sect benefic: Jupiter  |  Malefic: Saturn
+
+        Planets also get a bonus/penalty for being in a sign of their sect
+        (above/below horizon matching their day/night nature).
+
+        A planet IN SECT and in a sign of its sect = most benefic possible.
+        A planet CONTRARY TO SECT and in the wrong hemisphere = most malefic.
+        """
+        # Get planet positions
+        planets = {}
+        planet_codes = {
+            "Sun": swe.SUN, "Moon": swe.MOON, "Mercury": swe.MERCURY,
+            "Venus": swe.VENUS, "Mars": swe.MARS, "Jupiter": swe.JUPITER,
+            "Saturn": swe.SATURN,
+        }
+
+        for name, code in planet_codes.items():
+            lon = float(_swe_pos(swe.calc_ut(jd, code))[0])
+            # Above horizon = 0-180° ahead of Asc
+            above_horizon = 0 < ((lon - asc_lon) % 360) < 180
+            planets[name] = {"longitude": lon, "above_horizon": above_horizon}
+
+        # Sect assignment
+        if is_day:
+            sect_light = "Sun"
+            sect_benefic = "Jupiter"
+            sect_malefic = "Saturn"
+            contrary_light = "Moon"
+            contrary_benefic = "Venus"
+            contrary_malefic = "Mars"
+        else:
+            sect_light = "Moon"
+            sect_benefic = "Venus"
+            sect_malefic = "Mars"
+            contrary_light = "Sun"
+            contrary_benefic = "Jupiter"
+            contrary_malefic = "Saturn"
+
+        # Mercury's sect depends on whether it rises before or after the Sun
+        merc_lon = planets["Mercury"]["longitude"]
+        sun_lon_val = planets["Sun"]["longitude"]
+        merc_morning = ((sun_lon_val - merc_lon) % 360) < 180
+        mercury_sect = "day" if merc_morning else "night"
+
+        # Score each planet's sect condition (-2 to +2)
+        # +2 = in sect + correct hemisphere (most benefic expression)
+        # +1 = in sect but wrong hemisphere
+        # -1 = contrary to sect but right hemisphere
+        # -2 = contrary to sect + wrong hemisphere (most malefic expression)
+        planet_sect = {}
+        day_planets = {"Sun", "Jupiter", "Saturn"}
+        night_planets = {"Moon", "Venus", "Mars"}
+
+        for name, data in planets.items():
+            if name == "Mercury":
+                in_sect = (mercury_sect == "day" and is_day) or (
+                    mercury_sect == "night" and not is_day)
+            elif name in day_planets:
+                in_sect = is_day
+            else:
+                in_sect = not is_day
+
+            # Hemisphere check: day planets prefer above horizon,
+            # night planets prefer below
+            if name in day_planets:
+                correct_hemisphere = data["above_horizon"]
+            elif name in night_planets:
+                correct_hemisphere = not data["above_horizon"]
+            else:
+                correct_hemisphere = in_sect  # Mercury follows its sect
+
+            if in_sect and correct_hemisphere:
+                score = 2
+                condition = "In Sect + Correct Hemisphere (strongest benefic)"
+            elif in_sect and not correct_hemisphere:
+                score = 1
+                condition = "In Sect but wrong hemisphere"
+            elif not in_sect and correct_hemisphere:
+                score = -1
+                condition = "Contrary to Sect but correct hemisphere"
+            else:
+                score = -2
+                condition = "Contrary to Sect + wrong hemisphere (most malefic)"
+
+            planet_sect[name] = {
+                "in_sect": in_sect,
+                "above_horizon": data["above_horizon"],
+                "score": score,
+                "condition": condition,
+            }
+
+        return {
+            "is_day_chart": is_day,
+            "sect_light": sect_light,
+            "sect_benefic": sect_benefic,
+            "sect_malefic": sect_malefic,
+            "contrary_light": contrary_light,
+            "contrary_benefic": contrary_benefic,
+            "contrary_malefic": contrary_malefic,
+            "mercury_sect": mercury_sect,
+            "planets": planet_sect,
+            "most_benefic": sect_benefic,
+            "most_malefic": contrary_malefic,
+            "summary": (
+                f"{'Day' if is_day else 'Night'} chart — "
+                f"{sect_benefic} is the most powerful benefic, "
+                f"{contrary_malefic} is the most problematic malefic. "
+                f"Sect light: {sect_light}."
+            ),
+        }
 
     def _calc_fortune(self, asc: float, sun: float, moon: float, is_day: bool) -> float:
         """Lot of Fortune formula."""

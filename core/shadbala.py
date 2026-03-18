@@ -15,6 +15,8 @@ Minimum required for full strength per Parashara:
   Sun=6.5, Moon=6.0, Mars=5.0, Mercury=7.0, Jupiter=6.5, Venus=5.5, Saturn=5.0 Rupas.
 """
 import swisseph as swe
+from core.ayanamsa import AyanamsaManager
+from config import settings
 
 def _swe_pos(result):
     """Normalise pyswisseph calc_ut/fixstar return across API versions.
@@ -84,7 +86,7 @@ def calculate_shadbala(jd: float, lat: float, lon: float) -> Dict[str, Any]:
     Calculate full Shadbala for all 7 classical planets.
     Returns rupas per planet plus interpretation tier.
     """
-    swe.set_sid_mode(swe.SIDM_LAHIRI)
+    AyanamsaManager.set_ayanamsa(settings.ayanamsa)
 
     # Get sidereal positions
     positions = {}

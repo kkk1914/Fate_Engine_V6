@@ -5,6 +5,8 @@ from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 
 import swisseph as swe
+from core.ayanamsa import AyanamsaManager
+from config import settings
 
 def _swe_pos(result):
     """Normalise pyswisseph calc_ut/fixstar return across API versions.
@@ -556,7 +558,7 @@ def ashtakavarga_mvp(placements: Dict[str, Any]) -> Dict[str, Any]:
     return {"sarva_sign_scores": out, "method": "MVP_v1"}
 
 def calculate_vedic(jd: float, lat: float, lon: float, time_known: bool, birth_dt_utc: datetime) -> Dict[str, Any]:
-    swe.set_sid_mode(swe.SIDM_LAHIRI)
+    AyanamsaManager.set_ayanamsa(settings.ayanamsa)
     v_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
 
     placements = {}

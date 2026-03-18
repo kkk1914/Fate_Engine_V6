@@ -29,8 +29,22 @@ PLANETS = {
     "Pluto": swe.PLUTO
 }
 
-ASPECTS = [(0, "Conjunction"), (60, "Sextile"), (90, "Square"),
-           (120, "Trine"), (180, "Opposition")]
+ASPECTS = [(0, "Conjunction"), (30, "Semi-sextile"), (45, "Semi-square"),
+           (60, "Sextile"), (90, "Square"), (120, "Trine"),
+           (135, "Sesquisquare"), (150, "Quincunx"), (180, "Opposition")]
+
+# Per-aspect orbs: major Ptolemaic aspects get 8°, minor aspects get tighter orbs
+ASPECT_ORBS = {
+    0: 8.0, 30: 2.0, 45: 2.0, 60: 6.0, 90: 8.0,
+    120: 8.0, 135: 2.0, 150: 3.0, 180: 8.0,
+}
+# Per-planet orb multipliers: luminaries get wider orbs, Mercury/Venus tighter
+_PLANET_ORB_MULTIPLIER = {
+    "Sun": 1.25, "Moon": 1.25,
+    "Mercury": 0.80, "Venus": 0.85,
+    "Mars": 1.0, "Jupiter": 1.0, "Saturn": 1.0,
+    "Uranus": 0.90, "Neptune": 0.90, "Pluto": 0.90,
+}
 OOB_LIMIT = 23.4392911
 
 # Outer planets to scan for transit aspects
@@ -219,7 +233,7 @@ class WesternEngine:
         return float(pos_equ[1])
 
     def _calc_aspects(self, placements: Dict) -> List[Dict]:
-        """Calculate Ptolemaic aspects with 8° orb."""
+        """Calculate aspects with per-aspect orbs (Ptolemaic + minor)."""
         aspects = []
         names = list(placements.keys())
 
@@ -233,7 +247,12 @@ class WesternEngine:
                 dist = min(diff, 360 - diff)
 
                 for angle, name in ASPECTS:
-                    if abs(dist - angle) <= 8.0:
+                    base_orb = ASPECT_ORBS.get(angle, 8.0)
+                    # Apply per-planet multiplier (average of both planets)
+                    m1 = _PLANET_ORB_MULTIPLIER.get(p1, 1.0)
+                    m2 = _PLANET_ORB_MULTIPLIER.get(p2, 1.0)
+                    orb_limit = base_orb * ((m1 + m2) / 2.0)
+                    if abs(dist - angle) <= orb_limit:
                         aspects.append({
                             "p1": p1,
                             "p2": p2,

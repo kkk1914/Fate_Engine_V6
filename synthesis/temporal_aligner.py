@@ -1,3 +1,4 @@
+
 """Temporal alignment across astrological systems.
 
 FIX v2.0:
@@ -14,7 +15,30 @@ FIX v2.0:
 """
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional
+import logging
 import math
+
+logger = logging.getLogger(__name__)
+
+# ── Technique-specific temporal widths (in days) ────────────────────────────
+# Each technique has a natural "orb of influence" — using a flat 45-day window
+# for all techniques was mixing sniper rifles with shotguns.
+_TECHNIQUE_TEMPORAL_WIDTH = {
+    "Primary Direction":      540,   # ±18 months — 1°=1 year, standard orb
+    "Profection":             180,   # ±6 months — covers full profection year
+    "Zodiacal_Releasing":     90,    # ±3 months — chapter-level theme
+    "Vimshottari Dasha":      30,    # ±1 month — dasha boundary transition
+    "Vimshottari_Antardasha": 30,    # ±1 month
+    "Transit_Aspect":         15,    # ±15 days — exact hit
+    "Transit":                15,
+    "Solar Return":           60,    # ±2 months — annual chart activation
+    "Lunar Return":           14,    # ±2 weeks — monthly precision
+    "Tajaka":                 60,    # ±2 months — Vedic solar return
+    "Da Yun":                 180,   # ±6 months — decade-level luck pillar
+    "Liu_Nian":               90,    # ±3 months — annual pillar
+    "Firdaria":               60,    # ±2 months — period transition
+    "Progression":            90,    # ±3 months — 1°/year progressed aspect
+}
 
 
 class TemporalAligner:
@@ -23,18 +47,30 @@ class TemporalAligner:
     Converts all predictions → unified events → clusters (storm windows).
     """
 
+    # Tracks data quality issues surfaced in the report footer
+    data_warnings: List[str] = []
+
     def __init__(self, natal_jd: float):
         self.natal_jd = natal_jd
         self._now_jd = self._datetime_to_jd(datetime.now(timezone.utc))
+        self.data_warnings = []
         # Derive birth month/day for birthday-relative profection anchoring
         try:
             import swisseph as _swe
             _y, _m, _d, _h = _swe.revjul(natal_jd)
             self._birth_month = int(_m)
             self._birth_day   = min(int(_d), 28)   # safe for all months
-        except Exception:
-            self._birth_month = 7
-            self._birth_day   = 1
+        except Exception as e:
+            logger.error(f"Failed to derive birth date from JD {natal_jd}: {e}. "
+                         f"Profection anchoring will be inaccurate.")
+            self.data_warnings.append(
+                "Birth date could not be derived from Julian Day — "
+                "profection year anchoring may be shifted."
+            )
+            # Use rough estimate from JD rather than arbitrary fallback
+            approx_dt = self._jd_to_approx_datetime(natal_jd)
+            self._birth_month = approx_dt.month
+            self._birth_day   = min(approx_dt.day, 28)
 
     # ─────────────────────────────────────────────────────────────────────
     # Public API
@@ -85,18 +121,33 @@ class TemporalAligner:
                             "description": f"{dasha.get('lord', '?')} Dasha",
                         })
 
-        # Filter to future events within 6 years
-        max_jd = self._now_jd + 6 * 365.25
+        # Filter to future events within 16 years (covers the full 15-year report window)
+        max_jd = self._now_jd + 16 * 365.25
         aligned = [e for e in aligned
                    if e.get("jd") and self._now_jd <= e["jd"] <= max_jd]
+
+        # Assign technique-specific temporal widths (in days)
+        # This replaces the flat 45-day clustering window
+        for e in aligned:
+            e["temporal_width"] = _TECHNIQUE_TEMPORAL_WIDTH.get(
+                e.get("technique", ""), 30
+            )
 
         return sorted(aligned, key=lambda x: x["jd"])
 
     def find_temporal_clusters(self, aligned_events: List[Dict],
-                               window_days: int = 45) -> List[Dict]:
+                               window_days: int = 45,
+                               max_span_days: int = 180) -> List[Dict]:
         """
         Find clusters of events within time windows (storm windows).
         Returns clusters with ≥2 events. Multi-system clusters are flagged.
+
+        Uses technique-specific temporal widths: two events cluster if
+        they fall within max(event1.width, event2.width) of each other.
+        The window_days parameter is now a fallback for events without widths.
+
+        max_span_days: maximum total span for a single cluster (default 180 days
+        = ~6 months). Prevents greedy chaining from producing multi-year windows.
         """
         if not aligned_events:
             return []
@@ -108,8 +159,14 @@ class TemporalAligner:
             if not current_cluster:
                 current_cluster = [event]
             else:
-                last_jd = current_cluster[-1]["jd"]
-                if event["jd"] - last_jd <= window_days:
+                last = current_cluster[-1]
+                # Use the larger temporal width of the two events
+                effective_window = max(
+                    event.get("temporal_width", window_days),
+                    last.get("temporal_width", window_days),
+                )
+                span = event["jd"] - current_cluster[0]["jd"]
+                if event["jd"] - last["jd"] <= effective_window and span <= max_span_days:
                     current_cluster.append(event)
                 else:
                     if len(current_cluster) >= 2:
@@ -196,7 +253,8 @@ class TemporalAligner:
                     try:
                         dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                         jd = self._datetime_to_jd(dt)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning(f"Skipping lunar return (date parse error for '{date_str}'): {e}")
                         continue
                 else:
                     continue
@@ -266,7 +324,8 @@ class TemporalAligner:
                     "confidence":  0.62,
                     "domain":      natal_pt.lower(),
                 })
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Skipping outer transit hit (parse error): {e}")
                 continue
         return events
 
@@ -311,8 +370,20 @@ class TemporalAligner:
             year = taj.get("year")
             if not year:
                 continue
+            # Prefer actual Solar Return JD if available; fall back to birthday in that year
+            jd = taj.get("solar_return_jd")
+            if not jd:
+                # Anchor to birthday rather than June 15 midpoint
+                try:
+                    bd_dt = datetime(int(year), self._birth_month, self._birth_day,
+                                     tzinfo=timezone.utc)
+                    jd = self._datetime_to_jd(bd_dt)
+                except Exception:
+                    jd = self._year_to_jd(int(year))
+            else:
+                jd = float(jd)
             events.append({
-                "jd": self._year_to_jd(int(year)),
+                "jd": jd,
                 "system": "Vedic",
                 "technique": "Tajaka",
                 "description": (f"Tajaka {year}: Muntha {taj.get('muntha_sign', '?')}, "
@@ -406,8 +477,8 @@ class TemporalAligner:
                 ),
                 "confidence":  confidence,
             })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Skipping ZR event (parse error): {e}")
 
     def _extract_progressions(self, pred: Dict) -> List[Dict]:
         """
@@ -446,7 +517,8 @@ class TemporalAligner:
                     "description": f"Prog {progressed} {aspect_name} natal {natal} (orb {orb:.2f}°)",
                     "confidence": 0.75,
                 })
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Skipping progression aspect (parse error): {e}")
                 continue
         return events
 
@@ -481,8 +553,8 @@ class TemporalAligner:
     # ─────────────────────────────────────────────────────────────────────
 
     def _build_cluster(self, events: List[Dict]) -> Dict:
-        systems = list(set(e["system"] for e in events))
-        techniques = list(set(e["technique"] for e in events))
+        systems = sorted(set(e["system"] for e in events))
+        techniques = sorted(set(e["technique"] for e in events))
         multi_system = len(systems) > 1
         n_systems = len(systems)
         n_events  = len(events)
@@ -505,15 +577,49 @@ class TemporalAligner:
         #   0.55–0.69 → "moderate-confidence" (2 systems, typical orb)
         #   < 0.55  → "low-confidence" (echo of a single system)
 
-        multi_bonus = 0.08 if n_systems >= 3 else (0.05 if n_systems == 2 else 0.0)
+        # Scale multi_bonus by minimum technique quality to prevent weak
+        # technique pairs from inflating scores into HIGH-CONFIDENCE
+        technique_confidences = [e.get("confidence", 0.7) for e in events]
+        min_technique = min(technique_confidences) if technique_confidences else 0.7
+        multi_bonus_raw = 0.08 if n_systems >= 3 else (0.05 if n_systems == 2 else 0.0)
+        multi_bonus = multi_bonus_raw * min(1.0, min_technique / 0.75)
+
         depth_bonus = min(0.08, (n_events - 2) * 0.02)  # +2% per event over 2, cap 8%
         raw_score   = avg_confidence + multi_bonus + depth_bonus
         convergence_score = round(min(0.97, raw_score), 3)
 
+        # ── Progressive long-range confidence decay ─────────────────────
+        # Predictions further out carry more uncertainty. PD/Dasha anchors
+        # reduce the penalty by 50%, but never eliminate it entirely.
+        center_jd = (events[0]["jd"] + events[-1]["jd"]) / 2
+        years_ahead = (center_jd - self._now_jd) / 365.25
+        has_anchor = any(
+            e.get("technique") in ("Primary Direction", "Vimshottari Dasha")
+            for e in events
+        )
+        long_range_decayed = False
+        if years_ahead > 4:
+            if years_ahead > 8:
+                penalty = 0.25
+            elif years_ahead > 6:
+                penalty = 0.18
+            else:
+                penalty = 0.12
+            # PD/Dasha anchors reduce penalty by 50%, not eliminate it
+            if has_anchor:
+                penalty *= 0.5
+            convergence_score = round(max(0.30, convergence_score - penalty), 3)
+            long_range_decayed = True
+
+        # Hard cap: nothing >6 years out can be NEAR-CERTAIN
+        if years_ahead > 6 and convergence_score >= 0.85:
+            convergence_score = 0.84
+            long_range_decayed = True
+
         if convergence_score >= 0.85:
             confidence_label = "NEAR-CERTAIN"
             stoplight = "🔴"  # high-pressure — not danger, just significance
-        elif convergence_score >= 0.70:
+        elif convergence_score >= 0.75:  # raised from 0.70 to prevent inflation
             confidence_label = "HIGH-CONFIDENCE"
             stoplight = "🟠"
         elif convergence_score >= 0.55:
@@ -536,6 +642,7 @@ class TemporalAligner:
             "convergence_score": convergence_score,
             "confidence_label": confidence_label,
             "stoplight": stoplight,
+            "long_range_decayed": long_range_decayed,
             # Human-readable anchor
             "center_jd": (events[0]["jd"] + events[-1]["jd"]) / 2,
         }
@@ -572,11 +679,20 @@ class TemporalAligner:
 
     @staticmethod
     def _year_to_jd(year: int) -> float:
-        """Convert a calendar year (Jan 1) to Julian Day."""
+        """Convert a calendar year (mid-year) to Julian Day."""
         try:
             dt = datetime(year, 6, 15, 12, 0, 0, tzinfo=timezone.utc)  # Mid-year
         except ValueError:
-            dt = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+            logger.error(f"Invalid year {year} in _year_to_jd — skipping event")
+            raise
         epoch = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
         delta = (dt - epoch).total_seconds()
         return 2451545.0 + delta / 86400.0
+
+    @staticmethod
+    def _jd_to_approx_datetime(jd: float) -> datetime:
+        """Convert JD back to approximate datetime (for fallback birth date)."""
+        epoch = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        delta_seconds = (jd - 2451545.0) * 86400.0
+        return epoch + timedelta(seconds=delta_seconds)
+

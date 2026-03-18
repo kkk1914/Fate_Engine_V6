@@ -18,6 +18,8 @@ AUTHORITY:
 """
 
 import swisseph as swe
+from core.ayanamsa import AyanamsaManager
+from config import settings
 
 def _swe_pos(result):
     """Normalise pyswisseph calc_ut/fixstar return across API versions.
@@ -75,7 +77,7 @@ def calculate_kakshya_transits(
     Returns:
         dict with transit_timeline, peak_windows, expert_block
     """
-    swe.set_sid_mode(swe.SIDM_LAHIRI)
+    AyanamsaManager.set_ayanamsa(settings.ayanamsa)
 
     now = datetime.now(timezone.utc)
     now_jd = _dt_to_jd(now)
@@ -96,7 +98,7 @@ def calculate_kakshya_transits(
                 sid_lon = float(pos[0]) % 360
                 sign_idx = int(sid_lon // 30)
                 deg_in_sign = sid_lon % 30
-                kakshya_idx = int(deg_in_sign / KAKSHYA_DEG)
+                kakshya_idx = min(int(deg_in_sign / KAKSHYA_DEG), 7)  # clamp to 0-7
                 kakshya_lord = KAKSHYA_LORDS[kakshya_idx]
 
                 # Get SAV for this sign

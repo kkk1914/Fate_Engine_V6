@@ -17,6 +17,10 @@ focus field, so the LLM naturally prioritizes the user's topics throughout.
 """
 
 from typing import List, Dict, Optional
+import logging
+import json
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -274,7 +278,9 @@ class QueryEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _detect_themes(self, questions: List[str]) -> List[str]:
-        """Return list of detected theme keys, ordered by relevance."""
+        """Return list of detected theme keys, ordered by relevance.
+        Uses keyword matching first; falls back to LLM classification when
+        keyword matching is ambiguous (0-1 hits)."""
         full_text = " ".join(questions).lower()
         scores: Dict[str, int] = {}
 
@@ -283,8 +289,60 @@ class QueryEngine:
             if hits > 0:
                 scores[theme_key] = hits
 
-        # Sort by hit count descending
-        return sorted(scores.keys(), key=lambda k: scores[k], reverse=True)
+        keyword_themes = sorted(scores.keys(), key=lambda k: scores[k], reverse=True)
+
+        # If keyword matching found 2+ themes, trust it
+        if len(keyword_themes) >= 2:
+            return keyword_themes
+
+        # LLM fallback for ambiguous questions (e.g. "Will my business partnership succeed?")
+        llm_themes = self._llm_classify_themes(questions)
+        if llm_themes:
+            # Merge: keyword hits first, then LLM-detected themes (no duplicates)
+            merged = list(keyword_themes)
+            for t in llm_themes:
+                if t not in merged:
+                    merged.append(t)
+            return merged
+
+        return keyword_themes
+
+    def _llm_classify_themes(self, questions: List[str]) -> List[str]:
+        """Use a cheap LLM call to classify question themes when keywords are ambiguous."""
+        try:
+            from experts.gateway import gateway
+            theme_keys = list(THEMES.keys())
+            theme_labels = {k: THEMES[k]["label"] for k in theme_keys}
+
+            prompt = (
+                f"Classify these astrology questions into 1-3 themes.\n"
+                f"Available themes: {json.dumps(theme_labels)}\n\n"
+                f"Questions:\n"
+                + "\n".join(f"  - {q}" for q in questions)
+                + "\n\nRespond with ONLY a JSON array of theme keys, e.g. [\"career\", \"relationship\"]."
+            )
+
+            result = gateway.generate(
+                system_prompt="You classify questions into predefined themes. Respond with only a JSON array.",
+                user_prompt=prompt,
+                model="gemini-2.5-flash-lite",
+                max_tokens=100,
+                temperature=0.0,
+            )
+
+            if not result.get("success"):
+                return []
+
+            raw = result.get("content", "").strip()
+            # Parse the JSON array
+            if raw.startswith("["):
+                themes = json.loads(raw)
+                return [t for t in themes if t in THEMES]
+            return []
+
+        except Exception as e:
+            logger.debug(f"LLM theme classification fallback failed: {e}")
+            return []
 
     # ─────────────────────────────────────────────────────────────────────────
     # Steering block builder

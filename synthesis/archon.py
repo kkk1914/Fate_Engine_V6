@@ -1,16 +1,18 @@
+
 """
 Archon v2 — The Celestial Dossier
-Master narrative architect for the 13-Section premium astrological report.
+Master narrative architect for the 15-Section premium astrological report.
 
 STRUCTURE:
   PART I:   THE NATIVITY     (5 sections — natal portrait)
-  PART II:  THE ALMANAC      (6 sections — year-by-year chronological forecast)
+  PART II:  THE ALMANAC      (7 sections — current config + 5 year chapters + 15yr arc map)
   PART III: THE DIRECTIVE    (2 sections — mandate and warning)
+  PART IV:  YOUR QUESTIONS   (1 section — generated only when questions submitted)
 
 UPGRADE FROM v1:
   v1: 10 chapters; predictive split by domain (finances/career/health × 3 years)
-  v2: 13 sections; predictive chronological (all domains per year × 5 years)
-      + Oracle Opening hook, Current Configuration bridge, merged natal chapters
+  v2: 15 sections; year-by-year chapters 2026–2030 (full-domain per year) +
+      15-year window arc map + Oracle Opening hook + Current Configuration bridge
 """
 
 import logging
@@ -21,6 +23,8 @@ from typing import Dict, List, Any, Optional
 
 from experts.gateway import gateway
 from config import settings
+from synthesis.qa_pipeline import QAPipeline
+from synthesis.post_validator import PostValidator, HardRuleEnforcer
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +50,14 @@ SECTION_DEFS = {
             "NOT personality description — behavioral tells. The things they do in private. "
             "The patterns they haven't named yet. "
             "FINAL SENTENCE ONLY: the core paradox of this chart in plain language. "
-            "Format: 'The trap is: [specific paradox that could only be this person].'"
+            "Format: 'The trap is: [specific paradox that could only be this person].'\n\n"
+            "GROUNDING RULE (internal — do NOT show this reasoning in output):\n"
+            "Before writing each observation, mentally identify which specific placement "
+            "(planet, sign, house, aspect) drives it. If you cannot name the placement, "
+            "do NOT write the observation — it is a generic projection, not a chart reading. "
+            "Every sentence must be derivable from THIS chart's specific configurations. "
+            "A correct oracle for Sun-Cancer-Moon-Capricorn should read differently from "
+            "Sun-Aries-Moon-Libra. If swapping the signs wouldn't change your sentence, delete it."
         ),
         "domains": [],
     },
@@ -95,8 +106,9 @@ SECTION_DEFS = {
         "focus": (
             "Use 4-5 labeled mechanisms with bold headers. Blueprint format, not essay. "
             "Each mechanism: [NAME] → placement → real-world financial/career consequence. "
-            "REQUIRED opening: The WEALTH CAPACITY SCORE BLOCK appears verbatim at the top, "
+            "REQUIRED opening: The WEALTH CAPACITY BLOCK appears verbatim at the top, "
             "before any mechanism. It is provided in the section data — reproduce it exactly as shown. "
+            "Do NOT add any numerical score or rating — only the tier label (HIGH, MODERATE, etc). "
             "REQUIRED mechanisms (after the score block): "
             "(1) THE INCOME ENGINE — exactly how this chart generates money. "
             "Name specific industries where this chart is competitive (from FINANCIAL PROFILE). "
@@ -203,45 +215,143 @@ SECTION_DEFS = {
         "domains": ["Maha Dasha", "Profection", "Current Transits"],
     },
 
+    # ── PART II: THE ALMANAC — YEAR CHAPTERS (2026–2030) ─────────────────────
+
     6: {
+        "id": "year_2026",
+        "part": "II",
+        "title": "YEAR 2026",
+        "header": "YEAR 2026",
+        "type": "year_forecast",
+        "target_year": 2026,
+        "words": (580, 640),
+        "focus": (
+            "Full-domain year forecast for 2026. Cover: career/finance (what is available and what is tested), "
+            "relationships (what is activated), health (what demands attention), and the most important "
+            "single action this year demands. Lead with the year's highest-confidence window. "
+            "Name both the peak opportunity window and the peak pressure window explicitly."
+        ),
+        "domains": ["All 2026 storm windows", "Profection 2026", "Tajaka 2026", "Liu Nian 2026", "Outer transits 2026"],
+    },
+
+    7: {
+        "id": "year_2027",
+        "part": "II",
+        "title": "YEAR 2027",
+        "header": "YEAR 2027",
+        "type": "year_forecast",
+        "target_year": 2027,
+        "words": (580, 640),
+        "focus": (
+            "Full-domain year forecast for 2027. Cover: career/finance, relationships, health, "
+            "and the single most important action 2027 demands. Lead with the highest-confidence window. "
+            "Name both peak opportunity and peak pressure windows explicitly."
+        ),
+        "domains": ["All 2027 storm windows", "Profection 2027", "Tajaka 2027", "Liu Nian 2027", "Outer transits 2027"],
+    },
+
+    8: {
+        "id": "year_2028",
+        "part": "II",
+        "title": "YEAR 2028",
+        "header": "YEAR 2028",
+        "type": "year_forecast",
+        "target_year": 2028,
+        "words": (580, 640),
+        "focus": (
+            "Full-domain year forecast for 2028. Cover: career/finance, relationships, health, "
+            "and the single most important action 2028 demands. Lead with the highest-confidence window. "
+            "Name both peak opportunity and peak pressure windows explicitly."
+        ),
+        "domains": ["All 2028 storm windows", "Profection 2028", "Tajaka 2028", "Liu Nian 2028", "Outer transits 2028"],
+    },
+
+    9: {
+        "id": "year_2029",
+        "part": "II",
+        "title": "YEAR 2029",
+        "header": "YEAR 2029",
+        "type": "year_forecast",
+        "target_year": 2029,
+        "words": (580, 640),
+        "focus": (
+            "Full-domain year forecast for 2029. Cover: career/finance, relationships, health, "
+            "and the single most important action 2029 demands. Lead with the highest-confidence window. "
+            "Name both peak opportunity and peak pressure windows explicitly."
+        ),
+        "domains": ["All 2029 storm windows", "Profection 2029", "Tajaka 2029", "Liu Nian 2029", "Outer transits 2029"],
+    },
+
+    10: {
+        "id": "year_2030",
+        "part": "II",
+        "title": "YEAR 2030",
+        "header": "YEAR 2030",
+        "type": "year_forecast",
+        "target_year": 2030,
+        "words": (580, 640),
+        "focus": (
+            "Full-domain year forecast for 2030. Cover: career/finance, relationships, health, "
+            "and the single most important action 2030 demands. Lead with the highest-confidence window. "
+            "Name both peak opportunity and peak pressure windows explicitly."
+        ),
+        "domains": ["All 2030 storm windows", "Profection 2030", "Tajaka 2030", "Liu Nian 2030", "Outer transits 2030"],
+    },
+
+    # ── PART II: THE ALMANAC — 15-YEAR ARC MAP ───────────────────────────────
+
+    11: {
         "id": "almanac_summary",
         "part": "II",
         "title": "◈ THE FIFTEEN-YEAR WINDOW MAP",
         "header": "◈ THE FIFTEEN-YEAR WINDOW MAP",
         "type": "almanac_summary",
-        "words": (500, 580),
+        "words": (800, 1000),
         "focus": (
-            "A DATE-ANCHORED TIMELINE of the 10-15 most significant windows across 2026–2040. "
-            "Each entry is a READING, not a label. Format each entry EXACTLY as:\n\n"
+            "A PRECISE DATE-ANCHORED TIMELINE of the 12-16 most significant windows across 2026–2040. "
+            "You have been given computed storm windows, profection years, outer transit hits, "
+            "primary directions, solar returns, dashas, ZR phases, and Bazi pillars. "
+            "USE THE COMPUTED DATA. Do not invent windows or import general transit knowledge. "
+            "Every window must cite its EXACT date range from the data, the specific planets involved, "
+            "and which techniques from which systems agree on it.\n\n"
+            "FORMAT each entry EXACTLY as:\n\n"
             "**[MONTH YEAR – MONTH YEAR]** · [CONFIDENCE LABEL]\n"
-            "[2-3 sentences: what is happening astronomically in plain English — "
-            "which planets are where, what they are doing to this chart — "
-            "followed immediately by what this means for this person's life in this period. "
-            "Keep astrological naming minimal: name the planet and the life domain, "
-            "not the technique. 'Saturn crosses your achievement axis' not "
-            "'transiting Saturn makes an opposition to natal Saturn via outer_transit_aspects.py'.]\n"
-            "Systems agreeing: [Western] [Vedic] [Saju] [Hellenistic]\n\n"
+            "[3-4 sentences. SENTENCE 1: what is happening — name the specific planets "
+            "and their exact relationship to this chart (e.g. 'Saturn crosses your Ascendant '  "
+            "'while Jupiter stations in your 2nd house'). "
+            "SENTENCE 2: what this means for the specific domains of life being activated. "
+            "SENTENCE 3: the most likely concrete event in this person's life — be specific "
+            "(e.g. 'This is the primary window for your first mortgage application' or "
+            "'Your private practice registration opens here'). "
+            "SENTENCE 4 (if storm window): what the convergence score and systems mean for confidence.]\n"
+            "Technique citations: [list 2-4 specific techniques: e.g. Saturn→ASC transit | "
+            "Profection H1 | Vimshottari Venus AD | ZR Fortune Scorpio]\n\n"
             "---\n\n"
-            "Sort chronologically. Only include NEAR-CERTAIN and HIGH-CONFIDENCE windows. "
-            "NEAR-CERTAIN must be ≥0.85 convergence score — maximum 2 in the entire section. "
-            "After the window list, write one dense paragraph called **The Chain**: "
-            "how Window A creates the conditions for Window B → enables Window C. "
-            "Connect the sequence explicitly to home, family, wealth, career.\n\n"
-            "THIS SECTION IS NOT A REPEAT OF THE NATAL PORTRAIT. "
-            "Do not write mechanisms like 'THE INTELLECTUAL WEALTH ENGINE'. "
-            "Do not include 'What to do with it' bullets. "
-            "Write it like a weather forecast with specific dates, not a character analysis."
+            "Rules:\n"
+            "— Sort chronologically 2026–2040.\n"
+            "— Only include NEAR-CERTAIN and HIGH-CONFIDENCE windows.\n"
+            "— NEAR-CERTAIN (≥0.85 convergence) maximum 2 entries.\n"
+            "— Each window MUST cite at least 2 specific techniques from the data block.\n"
+            "— Name the profection house for each year: e.g. '2026 = House 10 profection year → Jupiter TL'.\n"
+            "— Name the active Vimshottari Dasha period for each window.\n"
+            "— Where a Bazi pillar clashes or combines with the Day Master, name it.\n"
+            "— Do NOT repeat natal character analysis. This is a forecast, not a portrait.\n\n"
+            "After all windows: one dense paragraph **The Chain** showing how each window "
+            "creates the conditions for the next — explicit causal links connecting home, "
+            "family, career, and wealth across the full arc 2026–2040. "
+            "This paragraph must reference specific years by name and explain why the sequence "
+            "matters: not just 'Window A leads to Window B' but specifically HOW and WHY."
         ),
         "domains": ["All storm windows 2026–2040", "Profections", "Primary Directions", "Outer Transits"],
     },
 
     # ── PART III: THE DIRECTIVE ───────────────────────────────────────────────
 
-    7: {
+    12: {
         "id": "directive",
         "part": "III",
-        "title": "◈ THE FIVE-YEAR DIRECTIVE",
-        "header": "◈ THE FIVE-YEAR DIRECTIVE",
+        "title": "◈ THE FIFTEEN-YEAR DIRECTIVE",
+        "header": "◈ THE FIFTEEN-YEAR DIRECTIVE",
         "type": "directive",
         "words": (280, 340),
         "focus": (
@@ -257,7 +367,7 @@ SECTION_DEFS = {
         "domains": ["Synthesis", "Red Thread", "Dated Actions"],
     },
 
-    8: {
+    13: {
         "id": "warning",
         "part": "III",
         "title": "◈ THE WARNING",
@@ -276,7 +386,7 @@ SECTION_DEFS = {
     # ── PART IV: YOUR QUESTIONS ───────────────────────────────────────────────
     # This is the primary deliverable when questions are submitted.
     # Each answer gets full natal + predictive + storm window data routed to it.
-    9: {
+    14: {
         "id": "questions",
         "part": "IV",
         "title": "◈ YOUR QUESTIONS ANSWERED",
@@ -305,7 +415,7 @@ SECTION_DEFS = {
 # System Prompts per section type
 # ─────────────────────────────────────────────────────────────────────────────
 
-ORACLE_PROMPT = """You are the Archon, opening a premium astrological dossier with a cold read.
+ORACLE_PROMPT = """You are a senior consulting astrologer, opening a premium astrological dossier with a cold read.
 
 Write THE ORACLE'S OPENING for this specific chart.
 
@@ -320,9 +430,11 @@ ABSOLUTE RULES:
    Short. Precise. Surgical. No sentence longer than 30 words.
 3. DO NOT EXPLAIN WHY. The Architecture of Self section explains the mechanics.
    Oracle only names what it sees. No "because your Mercury..." allowed.
-4. Every observation must be specific enough that a stranger reading this would think
-   it was written from personal knowledge. NOT "you struggle with emotions." YES:
-   "You explain your feelings instead of feeling them — and you mistake the explanation for intimacy."
+4. Every observation must describe a SPECIFIC BEHAVIOR that is testable and observable —
+   not an internal feeling state. NOT "you feel pressure to justify your existence" (unfalsifiable).
+   YES: "You explain your feelings instead of feeling them — and you mistake the explanation for intimacy."
+   NOT: "You struggle with emotions." YES: "You reorganize physical spaces when anxious."
+   The test: could a roommate or partner CONFIRM this observation? If not, it's too vague.
 5. BANNED WORDS: journey, tapestry, dance, explore, cosmic, realm, energy, vibration, deeply, truly.
    USE INSTEAD: compulsion, trap, hunger, pattern, engine, wound, debt, demand, cost, pressure, precision,
    instinct, architecture, capacity, design, asset, blueprint.
@@ -343,7 +455,7 @@ Intimacy frightens you not because you don't want it but because you don't know 
 You protect people from your real opinions, then resent them for not knowing what those opinions are.
 The trap is: you are brilliant at building connection and terrified of what happens if someone actually gets close enough to see you clearly.\""""
 
-NATAL_PROMPT = """You are the Archon, master synthesizer of four astrological systems writing a premium astrological dossier.
+NATAL_PROMPT = """You are a senior consulting astrologer, master synthesizer of four astrological systems writing a premium astrological dossier.
 
 WHAT THIS SECTION IS: A translation layer. Your reader already lived through this chart.
 They don't need to learn astrology. They need to understand themselves.
@@ -397,7 +509,7 @@ ADDITIONAL RULES:
 9. END with one sentence in completely plain language: the single biggest practical takeaway
    from this section — written so a stranger immediately understands the life consequence."""
 
-YEAR_FORECAST_PROMPT = """You are the Archon, writing the predictive almanac section of a premium astrological dossier.
+YEAR_FORECAST_PROMPT = """You are a senior consulting astrologer, writing the predictive almanac section of a premium astrological dossier.
 
 THE FUNDAMENTAL RULE:
 People read predictive reports to know what will happen. State the events first.
@@ -475,6 +587,23 @@ LOW-CONFIDENCE (<0.55):
 7. LENGTH: 580-640 words.
 8. START with: # YEAR {YEAR}
 9. Bold: **Primary Direction**, **Maha Dasha**, **Tajaka**, **Profection**, **Kakshya**
+10. REALISTIC PACING: When multiple major life domains (career, family, property,
+    health) have events in overlapping or adjacent windows, do NOT present them
+    all as simultaneous certainties. A single 4-month window cannot realistically
+    deliver a career change + financial windfall + baby + house purchase.
+    Instead: rank by convergence score, present the highest-confidence domain as
+    the PRIMARY outcome, and frame others as "conditions created" or "groundwork
+    laid" rather than simultaneous completed events. Spread outcomes across the
+    year or into subsequent years where the evidence supports it.
+11. OUTER PLANET TRANSITS: Pluto, Neptune, and Uranus transits are GRADUAL
+    processes lasting 1-3 years. Never describe them as acute daily stressors
+    with strict start/end dates. Use the full entry-to-exit window as the
+    active period and describe the process as unfolding gradually.
+12. ZODIACAL RELEASING is a thematic timing system, NOT a daily trigger.
+    ZR periods describe life chapters lasting months to years. Never present
+    a ZR shift as an acute event on a single day. Frame ZR as: "During this
+    period, the thematic emphasis shifts to [domain]" not "On March 16, ZR
+    activates [event]."
 
 VOICE AND RATIO:
   20% technical (which systems, exact dates, technique names)
@@ -490,7 +619,7 @@ quietly; this is when being visible pays off."
 NOT: "The Jupiter transit conjunct your natal Sun in Cancer activates the 10th house profection
 creating synergistic career potential." That is technique. Tell them what to expect."""
 
-CURRENT_CONFIG_PROMPT = """You are the Archon, writing a situation report for a premium astrological dossier.
+CURRENT_CONFIG_PROMPT = """You are a senior consulting astrologer, writing a situation report for a premium astrological dossier.
 
 Write THE CURRENT CONFIGURATION — exactly 3 short paragraphs, total 140-170 words.
 
@@ -514,7 +643,7 @@ RULES:
 2. No jargon explanations. Assume reader has read sections 1-4.
 3. All three paragraphs must name a REAL-WORLD EFFECT, not just an astrological condition."""
 
-DIRECTIVE_PROMPT = """You are the Archon, closing a premium astrological dossier with the mandate.
+DIRECTIVE_PROMPT = """You are a senior consulting astrologer, closing a premium astrological dossier with the mandate.
 
 ABSOLUTE RULES:
 1. Section 1 — THE RED THREAD: Exactly one sentence. Must name the Sun/Moon/Asc combination.
@@ -535,23 +664,35 @@ ABSOLUTE RULES:
    Example (no risk flag): "Never abandon a professional specialization before the 5-year mark.
    Your wealth compounds with depth, not breadth — the chart's income engine requires sustained focus."
 
-3. Section 3 — THE FIVE-YEAR ORDERS: Five specific, business-level actions. One per year.
+3. Section 3 — THE FIFTEEN-YEAR ORDERS: One concrete, dated, technical action per year 2026–2040.
    These are not abstract astrology — they are concrete life moves in specific industries/domains.
+   Group into three 5-year phases if helpful for readability.
    Format:
    **2026:** [What to do, in which domain, by when, to what measurable end]
    **2027:** [etc.]
    **2028:** [etc.]
    **2029:** [etc.]
    **2030:** [etc.]
+   **2031:** [etc.]
+   **2032:** [etc.]
+   **2033:** [etc.]
+   **2034:** [etc.]
+   **2035:** [etc.]
+   **2036:** [etc.]
+   **2037:** [etc.]
+   **2038:** [etc.]
+   **2039:** [etc.]
+   **2040:** [etc.]
    Use the PRIMARY WEALTH CHANNELS from the FINANCIAL PROFILE when assigning domains.
+   Each action must name the technique or window it responds to (e.g. "Saturn return", "Maha Dasha shift").
 
 4. NO padding. NO encouragement. NO "remember that..." NO "trust yourself."
    Reads like a CEO's quarterly brief — ordered, specific, no sentiment.
 
-5. LENGTH: 320-380 words.
-6. START with: # ◈ THE FIVE-YEAR DIRECTIVE"""
+5. LENGTH: 500-580 words.
+6. START with: # ◈ THE FIFTEEN-YEAR DIRECTIVE"""
 
-WARNING_PROMPT = """You are the Archon, writing the final warning of a premium astrological dossier.
+WARNING_PROMPT = """You are a senior consulting astrologer, writing the final warning of a premium astrological dossier.
 
 Write THE WARNING — 180-220 words.
 
@@ -572,14 +713,14 @@ RULES:
 7. START with: # ◈ THE WARNING
 8. LENGTH: 180-220 words. No more."""
 
-ALMANAC_SUMMARY_PROMPT = """You are the Archon, writing a dated timeline reading for a premium astrological dossier.
+ALMANAC_SUMMARY_PROMPT = """You are a senior consulting astrologer, writing a dated timeline reading for a premium astrological dossier.
 
-Write ◈ THE FIVE-YEAR WINDOW MAP.
+Write ◈ THE FIFTEEN-YEAR WINDOW MAP.
 
-THIS IS NOT A CHARACTER ANALYSIS. It is a dated forecast.
+THIS IS NOT A CHARACTER ANALYSIS. It is a dated forecast covering 2026–2040.
 The reader has already received a full natal portrait in Part I.
 They do not need to hear about their Gemini communication gifts again.
-They need to know WHEN things happen and WHAT to expect.
+They need to know WHEN things happen and WHAT to expect across the next fifteen years.
 
 FORMAT FOR EACH WINDOW:
 **[MONTH YEAR – MONTH YEAR]** · [CONFIDENCE LABEL]
@@ -598,9 +739,14 @@ MODERATE-CONFIDENCE (skip — only include NEAR-CERTAIN and HIGH-CONFIDENCE in t
 
 NEAR-CERTAIN CAP: Maximum 2 NEAR-CERTAIN labels in this section. All others must be HIGH-CONFIDENCE or lower.
 
+LONG-RANGE CONFIDENCE DECAY: For windows beyond 2030, downgrade the confidence label by one
+tier UNLESS the window is supported by a Primary Direction (0.95 authority) or a Vimshottari
+Dasha period boundary. Long-range transit-only windows degrade to MODERATE and should be
+excluded from this section. State this honestly: "Beyond 2030, timing precision decreases."
+
 RULES:
-1. START with: # ◈ THE FIVE-YEAR WINDOW MAP
-2. Sort windows chronologically. Include 8-12 windows.
+1. START with: # ◈ THE FIFTEEN-YEAR WINDOW MAP
+2. Sort windows chronologically across 2026–2040. Include 10-15 windows spread across the full arc.
 3. Only use windows from TEMPORAL STORM WINDOWS data. Do not invent windows.
 4. All dates must be AFTER today's date (stated in the data block).
 5. After the window list, write ONE paragraph titled **The Chain:**
@@ -610,73 +756,119 @@ RULES:
    Those belong in Part I. This section uses date ranges and life domains.
 7. DO NOT add "What to do with it" bullets. Practical guidance is woven into the window reading itself.
 8. BANNED: journey, tapestry, energies, cosmic, explore, "your chart says."
-9. LENGTH: 400-480 words total."""
+9. LENGTH: 550-680 words total (longer than 5-year version to cover the full arc).
+10. ZODIACAL RELEASING is a thematic timing system, NOT a daily trigger.
+    ZR periods describe life chapters lasting months to years. Never present
+    a ZR shift as an acute event on a single day.
+11. OUTER PLANET TRANSITS (Pluto, Neptune, Uranus) are GRADUAL processes lasting
+    1-3 years. Describe the process as unfolding gradually, not as acute events."""
 
 
-QUESTIONS_PROMPT = """You are the Archon, the final authority delivering precise, data-backed answers.
+QUESTIONS_PROMPT = """You are a senior consulting astrologer, the final authority delivering precise, data-backed answers.
 
 ═══════════════════════════════════════════════════════════════
-CRITICAL TEMPORAL RULE — READ FIRST, OBEY ALWAYS
+CRITICAL RULE 1 — TEMPORAL ACCURACY (READ FIRST, OBEY ALWAYS)
 ═══════════════════════════════════════════════════════════════
 TODAY'S DATE appears at the very top of the data block as "TODAY: YYYY-MM-DD".
 FORBIDDEN: Citing ANY date, window, or period BEFORE today's date.
 REQUIRED: Every date you write must be AFTER today.
-If you catch yourself writing a past year — STOP. Find the next future window instead.
+ALL transit dates MUST come from the EVIDENCE BLOCK provided — do NOT use your training
+knowledge of where planets are or will be. The evidence block has been computed from
+Swiss Ephemeris; your training data has not. If a transit is not in the evidence block,
+do not invent it.
+═══════════════════════════════════════════════════════════════
+
+═══════════════════════════════════════════════════════════════
+CRITICAL RULE 2 — HOUSE LORDSHIP ACCURACY
+═══════════════════════════════════════════════════════════════
+BEFORE claiming "planet X rules house Y": verify from the HOUSE-BASED ROUTING in the
+evidence block which sign is on the cusp of that house, and which planet rules that sign.
+The Tier 2 block shows: "HOUSE N: cusp=SIGN, lord=PLANET".
+Use those values. DO NOT assume house lordship from memory.
+Example: With Gemini Ascendant — House 4 = Virgo → Mercury rules H4, NOT the Sun.
+If you name the wrong house lord your answer is factually wrong.
+═══════════════════════════════════════════════════════════════
+
+═══════════════════════════════════════════════════════════════
+CRITICAL RULE 3 — GENDER PREDICTION
+═══════════════════════════════════════════════════════════════
+FORBIDDEN: Predicting the gender of a child.
+No classical astrological system can reliably determine foetal sex.
+If asked, state directly: "Astrology cannot predict gender with any reliability.
+The timing of conception and birth can be indicated; the sex cannot."
+Then focus entirely on the timing and conditions for pregnancy and birth.
 ═══════════════════════════════════════════════════════════════
 
 VOICE AND APPROACH:
-You are not a checklist generator. You are a trusted advisor who knows this person's chart deeply.
+You are not a checklist generator. You are a trusted advisor who knows this person's chart.
 Answer as a senior astrologer who has studied this chart for years would answer a private client —
 direct, specific, warm but not sentimental, authoritative but not cold.
-The answer should feel like it was written FOR THIS PERSON, not FOR ANYONE WITH THIS PLACEMENT.
+The answer should feel like it was written FOR THIS PERSON, not for anyone with this placement.
+Personal context is in the data: GP doctor in England, Burmese Buddhist, married, wants children,
+first home, multi-millionaire ambition. Use all of this. Make answers UK-specific where relevant.
 
 FORMAT FOR EACH QUESTION:
 
 **Q: [exact question as asked]**
 
-*Confidence:* [NEAR-CERTAIN / HIGH-CONFIDENCE / MODERATE-CONFIDENCE / LOW-CONFIDENCE]
-*Why:* [One sentence naming the strongest converging technique + the exact data point]
-
 **The direct answer:**
 [Give the verdict in the first sentence: yes / no / when / what form. No hedging.
-Then answer the actual question asked. If they asked "what should I do to become rich," tell them
-specifically what to do — not "the chart favors communication roles" but which specific path, in
-which industry, starting when, and why this chart is positioned for it right now. Use the
-natal data and the timing windows together to form a specific, personal answer.
-Narrow every date range to a 3-6 month window. Never give a 3-year range without a primary target.
-Language template where 3+ systems agree: "Three independent systems — [technique], [technique],
-[technique] — all converge on [Month YEAR]–[Month YEAR]. This is structural, not speculative."]
+Name the PRIMARY timing window AND the number of systems converging. 3-5 sentences.
+This paragraph must feel decisive, structurally grounded, and impossible to dismiss.
+Where 3+ systems agree: "Three independent systems — [technique], [technique], [technique] —
+all converge on [Month YEAR]–[Month YEAR]. This is structural, not speculative."
+For wealth questions: name specific financial mechanisms available to a UK GP —
+NHS salary structure, buy-to-let, private practice, portfolio career, locum rates, BMA contracts.
+For spiritual questions: name specific practices aligned to Theravada Buddhism and the chart.]
+
+**The full timing landscape:**
+[THIS IS THE EXPERT SECTION — the most important part of each answer.
+Survey ALL viable timing windows from the evidence — not just the nearest one.
+For each window (primary AND secondary/tertiary), explain:
+- Which techniques activate it and at what authority level (Gold/High/Moderate)
+- How many systems converge on it
+- What the structural conditions are (house lord dignity, Shadbala, dasha, profection)
+- Why it is stronger or weaker than competing windows
+
+A professional astrologer does NOT rush to the closest upcoming window. If 2030 has
+4-system convergence with a primary direction arc, it outranks a 2026 window with only
+transit support. COMPARE windows explicitly and explain your reasoning.
+5-8 sentences minimum. Be specific about planets, degrees, houses, and lords.]
 
 **Mechanism:**
-[2-3 sentences. Name the specific planets, houses, techniques. Be precise.
-This is the "why" behind the verdict — the astrological backbone of your answer.]
+[Name the 3-4 strongest techniques with evidence. Explain the astrological LOGIC connecting
+the planet/house/technique to the life outcome being asked about. Do NOT just list techniques —
+explain WHY they produce this outcome. 4-6 sentences.
+Example: "Mercury rules your 4th house of property (Virgo cusp). When Jupiter transits
+conjunct natal Mercury, it expands 4th house matters — the physical act of acquiring property.
+This is reinforced by the Vedic dasha: Jupiter antardasha activates Jupiter as karaka for
+property and expansion, doubling the signal."]
 
 **What this means for you:**
-[NOT a numbered action list. NOT "Step 1, Step 2, Step 3."
-Write 2-4 sentences of advisory prose — as if you are sitting across from this person.
-This paragraph should answer: given everything above, what should they actually do,
-when should they do it, and what would you tell them if they asked "but what does that mean
-practically for my life right now?" Include one specific near-term action anchored to a date.
-Example: "The most important thing you can do before May 2026 is [specific action] —
-not because it guarantees [outcome], but because it positions you exactly when [transit] opens.
-If I were in your position with this chart, I would [specific recommendation]."]
+[Advisory prose tailored to THIS person's life. Reference their specific situation
+(GP in England, Burmese Buddhist, married, wants children, property goals).
+Give concrete, actionable guidance with specific dates. What should they prepare?
+What should they watch for? What is the risk if they miss the window? 4-6 sentences.
+End with: "The single most important action before [DATE] is [specific action]."]
 
 ---
 
-NEAR-CERTAIN CAP: Use NEAR-CERTAIN label only for windows with convergence_score ≥ 0.85 AND
-3+ systems agreeing. The entire Q&A section should contain no more than 2 NEAR-CERTAIN labels total.
+NEAR-CERTAIN CAP: Use NEAR-CERTAIN only for convergence_score ≥ 0.85 AND 3+ systems.
+Maximum 2 NEAR-CERTAIN labels in the entire Q&A section.
 
 RULES:
 1. Answer EVERY question in the order given. Never skip or merge.
-2. USE the EVIDENCE block for each question — it contains pre-filtered future dates.
-3. TODAY IS SHOWN AT THE TOP OF THE DATA BLOCK. Cross-check every date you write against it.
+2. USE the EVIDENCE block for each question — it contains pre-filtered, computed future dates.
+3. CROSS-CHECK every date against the Tier 2 house routing for lordship accuracy.
 4. START with: # ◈ YOUR QUESTIONS ANSWERED
 5. Separate each answer with ---
-6. LENGTH: 400-550 words per question.
+6. LENGTH: 600-800 words per question. This is the most important section — depth matters.
 7. BANNED: "it depends", "only time will tell", vague spiritual hedges, dates before today,
-   numbered action lists in the "What this means for you" section.
-8. REQUIRED: Direct verdict + specific future date range + confidence label + personal advisory tone.
-9. PROFECTION HOUSE is the master key: a 10th house profection year = career activation. Say so."""
+   numbered action lists in "What this means for you", gender predictions, house lords from memory,
+   rushing to the nearest window without comparing alternatives.
+8. REQUIRED: Direct verdict + multi-window comparison + specific future dates from evidence block
+   + house lords verified from Tier 2 routing + personal advisory tone specific to this person's
+   life context + explanation of WHY each technique produces the predicted outcome."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -843,7 +1035,7 @@ def _compute_year_dashboard(temporal_clusters: list,
                              years: list = None) -> str:
     """
     Generate an at-a-glance grid showing intensity, financial volatility, and
-    relational harmony scores (1–10) for each of the five forecast years.
+    relational harmony scores (1–10) for each of the fifteen forecast years.
 
     Scores are computed purely from the cluster data — no API calls.
 
@@ -859,7 +1051,7 @@ def _compute_year_dashboard(temporal_clusters: list,
       1    = 🟢 quiet
     """
     if years is None:
-        years = [2026, 2027, 2028, 2029, 2030]
+        years = list(range(2026, 2041))
 
     FINANCE_KEYWORDS  = {"career", "saturn", "jupiter", "money", "2nd", "10th",
                           "profection", "solar return", "primary direction", "tajaka",
@@ -935,7 +1127,7 @@ def _compute_year_dashboard(temporal_clusters: list,
     # Format as a readable table
     lines = [
         "",
-        "## ◈ THE FIVE-YEAR AT-A-GLANCE",
+        "## ◈ THE FIFTEEN-YEAR AT-A-GLANCE",
         "",
         "*Scores computed from multi-system convergence analysis. "
         "10 = peak pressure / maximum opportunity. 1 = quiet.*",
@@ -962,7 +1154,7 @@ def _compute_year_dashboard(temporal_clusters: list,
         "*Score = intensity of activity, NOT a measure of good or bad luck. "
         "High scores mean pivotal periods — for opportunity AND challenge alike. "
         "A 🔴 10 in a Jupiter year = near-certain breakthrough. A 🔴 10 in a Saturn year = defining test. "
-        "Context is in the year sections below.*",
+        "Detail for 2026–2030 is in the year chapters below. 2031–2040 detail is in the Window Map.*",
         "",
         "*🔴 8–10 = pivotal / defining  🟠 5–7 = active / significant  "
         "🟡 2–4 = steady / building  🟢 1 = quiet*",
@@ -1032,10 +1224,9 @@ def _compute_wealth_score(chart_data: dict, ref: dict) -> dict:
     # ── 8th house risk flag ─────────────────────────────────────────────────
     # Planets in 8th house (shared resources) = joint-venture risk, NOT a score deduction
     # but informs the risk_flag for the report narrative
-    houses = w_natal.get("houses", {})
-    eighth_planets = [p for p, d in ref.items()
-                      if isinstance(d, dict) and d.get("house") == 8
-                      and not p.startswith("_")]   # exclude all private ref keys
+    w_placements = w_natal.get("placements", {})
+    eighth_planets = [p for p, d in w_placements.items()
+                      if isinstance(d, dict) and d.get("house") == 8]
     risk_flag = len(eighth_planets) > 0
 
     # ── Lot of Fortune dignity ──────────────────────────────────────────────
@@ -1121,7 +1312,6 @@ def _compute_wealth_score(chart_data: dict, ref: dict) -> dict:
 
 def _format_wealth_score_block(ws: dict) -> str:
     """Format the wealth score into a report-ready block for injection into Material World."""
-    score = ws["score"]
     tier  = ws["tier"]
     desc  = ws["tier_desc"]
     industries = ws["industries"]
@@ -1145,7 +1335,7 @@ def _format_wealth_score_block(ws: dict) -> str:
         yoga_note = f" ({yogas} Vedic wealth combination{'s' if yogas > 1 else ''} confirmed)"
 
     block = (
-        f"\n> **◈ WEALTH CAPACITY SCORE: {score}/10 — {tier}**{yoga_note}\n"
+        f"\n> **◈ WEALTH CAPACITY: {tier}**{yoga_note}\n"
         f"> *{desc}.*\n"
         f"> **Primary wealth channels:** {ind_str}\n"
         f"> **Wealth profile:** slow-compounding, authority-based — peak wealth arrives in the "
@@ -1160,7 +1350,7 @@ def _format_wealth_score_block(ws: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 _rule_querier = None
 try:
-    from synthesis.rule_querier import RuleQuerier
+    from graph.rule_querier import GraphRuleQuerier as RuleQuerier
     _rule_querier = RuleQuerier()
 except Exception:
     pass
@@ -1280,7 +1470,7 @@ class QuestionRouter:
         except (TypeError, ValueError):
             return str(rupas)
 
-    def _future_storm_windows(self, temporal_clusters: list, max_windows: int = 6) -> list:
+    def _future_storm_windows(self, temporal_clusters: list, max_windows: int = 15) -> list:
         future = [c for c in temporal_clusters if c.get("end_jd", 0) > self.today_jd]
         future.sort(key=lambda c: c.get("start_jd", 0))
         return future[:max_windows]
@@ -1467,6 +1657,38 @@ class QuestionRouter:
                             if any(rg.lower() in god.lower() for rg in relevant_gods):
                                 lines.append(f"    Bazi {pillar} {key}={god} (relevant to H{h})")
 
+            # Ashtakavarga house strength (raw Layer 1 data)
+            av_full = chart_data.get("vedic", {}).get("strength", {}).get("ashtakavarga_full", {})
+            av_house_strengths = av_full.get("house_strengths", [])
+            for hs in av_house_strengths:
+                if isinstance(hs, dict) and hs.get("house") == h:
+                    lines.append(f"    Ashtakavarga H{h}: SAV={hs.get('sav_score','?')}, "
+                                 f"strength={hs.get('strength','?')}")
+
+        # ── Vedic Yogas relevant to detected houses/planets ──────────────
+        yogas = v_nat.get("yogas", [])
+        if yogas:
+            relevant_yogas = [
+                y for y in yogas
+                if (isinstance(y, dict) and (
+                    y.get("house") in houses
+                    or any(p in (y.get("planets") or []) for p in
+                           [self.SIGN_RULERS.get(v_houses.get(f"Bhava_{h}", {}).get("sign", ""), "")
+                            for h in houses])
+                ))
+            ]
+            if relevant_yogas:
+                lines.append("\n── VEDIC YOGAS (relevant to this question) ──")
+                for y in relevant_yogas[:5]:
+                    strength = y.get("strength", "?")
+                    planets_str = ", ".join(y.get("planets", []))
+                    lines.append(f"  {y.get('name','?')} ({y.get('type','?')}): "
+                                 f"planets={planets_str}, house={y.get('house','?')}, "
+                                 f"strength={strength}")
+                    desc = y.get("description", "")
+                    if desc:
+                        lines.append(f"    → {desc[:150]}")
+
         return lines
 
     def _build_tier3_timing(self, relevant_planets: list, relevant_houses: list,
@@ -1494,16 +1716,17 @@ class QuestionRouter:
         lines.append(f"Current Profection: House {ref.get('_profection_house','?')}, "
                      f"Time Lord={ref.get('_time_lord','?')}")
 
-        # Profection years activating relevant houses
-        house_profs = [p for p in profecs if p.get("activated_house") in relevant_houses]
-        if house_profs:
-            lines.append(f"Profection years activating H{relevant_houses}:")
-            for p in house_profs:
-                lines.append(f"  {p.get('year')}: H{p.get('activated_house')} activates, "
-                             f"sign={p.get('profected_sign')}, TL={p.get('time_lord')}")
+        # Profection years — show ALL so LLM can compare across full timeline
+        if profecs:
+            lines.append(f"Full Profection Timeline (relevant houses for this question: {relevant_houses}):")
+            for p in profecs:
+                h_act = p.get("activated_house")
+                marker = " ◀ RELEVANT" if h_act in relevant_houses else ""
+                lines.append(f"  {p.get('year')}: H{h_act} activates, "
+                             f"sign={p.get('profected_sign')}, TL={p.get('time_lord')}{marker}")
 
-        # Future storm windows
-        future_windows = self._future_storm_windows(temporal_clusters, max_windows=5)
+        # Future storm windows — show ALL viable windows so LLM can compare
+        future_windows = self._future_storm_windows(temporal_clusters, max_windows=15)
         if future_windows:
             lines.append("Future storm windows (multi-system convergences):")
             for i, c in enumerate(future_windows, 1):
@@ -1524,7 +1747,7 @@ class QuestionRouter:
         transit_hits = self._future_transit_hits(outer, relevant_planets=None)
         relevant_hits = [h for h in transit_hits
                          if h.get("transiting") in relevant_planets
-                         or h.get("natal_point") in relevant_planets][:10]
+                         or h.get("natal_point") in relevant_planets][:20]
         if relevant_hits:
             lines.append("Outer planet transit hits (future, to question-relevant planets):")
             for h in relevant_hits:
@@ -1536,14 +1759,14 @@ class QuestionRouter:
                              f"natal {h.get('natal_point','?')}  "
                              f"[window: {entry}–{exit_}]")
 
-        # Primary Directions
+        # Primary Directions — show more arcs for full landscape
         all_dirs = []
         for cat in primary_dirs.values():
             if isinstance(cat, list):
-                all_dirs.extend(cat[:2])
+                all_dirs.extend(cat[:4])
         if all_dirs:
-            lines.append("Primary Directions (future arcs):")
-            for d in all_dirs[:5]:
+            lines.append("Primary Directions (future arcs — Gold Standard timing):")
+            for d in all_dirs[:10]:
                 lines.append(f"  {json.dumps(d, default=str)}")
 
         # Progressions
@@ -1554,9 +1777,49 @@ class QuestionRouter:
                 lines.append(f"  {pk}: {pd.get('degree',0):.1f}° {pd.get('sign','?')} "
                              f"{'(Rx)' if pd.get('retrograde') else ''}")
 
-        # Liu Nian relevant years
-        lines.append("Bazi Liu Nian (annual pillars, future):")
-        for ln in liu_nian[:5]:
+        # Da Yun (10-year luck pillars) — critical for timing questions
+        da_yun = b_pred.get("da_yun", {})
+        da_yun_pillars = da_yun.get("pillars", [])
+        if da_yun_pillars:
+            lines.append(f"Bazi Da Yun (10-year luck pillars, direction={da_yun.get('direction','?')}):")
+            for dy in da_yun_pillars:
+                if isinstance(dy, dict):
+                    lines.append(f"  Age {dy.get('start_age','?')}-{dy.get('end_age','?')}: "
+                                 f"{dy.get('stem','?')}{dy.get('branch','?')} "
+                                 f"({dy.get('stem_element','?')}/{dy.get('branch_element','?')})")
+
+        # Solar Returns (Gold Standard annual timing)
+        solar_returns = w_pred.get("solar_returns", [])
+        if solar_returns:
+            lines.append("Solar Returns (Gold Standard — annual chart, future only):")
+            for sr in solar_returns[:10]:
+                if isinstance(sr, dict):
+                    sr_date = sr.get("date", "?")
+                    sr_asc = sr.get("ascendant", sr.get("asc_sign", "?"))
+                    sr_mc = sr.get("mc_sign", sr.get("midheaven", "?"))
+                    lines.append(f"  {sr_date}: SR Asc={sr_asc}, MC={sr_mc}")
+
+        # Tajaka (Vedic solar return) — can be a list of yearly dicts or a single dict
+        tajaka_raw = v_pred.get("tajaka", [])
+        tajaka_list = tajaka_raw if isinstance(tajaka_raw, list) else [tajaka_raw] if isinstance(tajaka_raw, dict) else []
+        if tajaka_list:
+            lines.append("Tajaka (Vedic Solar Return):")
+            for taj in tajaka_list[:5]:
+                if not isinstance(taj, dict):
+                    continue
+                muntha = taj.get("muntha", taj.get("muntha_sign", "?"))
+                year = taj.get("year", "?")
+                lord = taj.get("lord_of_year", taj.get("year_lord", "?"))
+                lines.append(f"  {year}: Muntha={muntha}, Year Lord={lord}")
+                sahams = taj.get("sahams", {})
+                if isinstance(sahams, dict):
+                    for sname, sdata in list(sahams.items())[:3]:
+                        if isinstance(sdata, dict):
+                            lines.append(f"    Saham {sname}: {sdata.get('sign', '?')}")
+
+        # Liu Nian relevant years — full 15-year window
+        lines.append("Bazi Liu Nian (annual pillars 2026-2040):")
+        for ln in liu_nian[:15]:
             if isinstance(ln, dict):
                 yr     = ln.get("year", "?")
                 pillar = f"{ln.get('stem','?')}{ln.get('branch','?')}"
@@ -1565,6 +1828,29 @@ class QuestionRouter:
                 gods   = ln.get("ten_gods", {})
                 god_str = (" | " + ", ".join(f"{k}={v}" for k, v in gods.items() if v)) if gods else ""
                 lines.append(f"  {yr}: {pillar} ({s_el}/{b_el}){god_str}")
+
+        # Dasha sub-periods (antardasha timeline)
+        antar_timeline = dasha.get("antardasha_timeline", [])
+        if antar_timeline:
+            lines.append("Vimshottari Antardasha timeline (sub-periods):")
+            for ad in antar_timeline:
+                if isinstance(ad, dict):
+                    lines.append(f"  {ad.get('lord','?')}: {ad.get('start','?')} – {ad.get('end','?')}")
+
+        # Kakshya transit peak windows (Ashtakavarga-scored timing)
+        kakshya = chart_data.get("kakshya_transit", {})
+        peak_windows = kakshya.get("peak_windows", [])
+        if peak_windows:
+            relevant_peaks = [
+                pw for pw in peak_windows
+                if isinstance(pw, dict) and pw.get("planet") in relevant_planets
+            ][:8]
+            if relevant_peaks:
+                lines.append("Kakshya transit peak windows (Ashtakavarga-scored, relevant planets):")
+                for pw in relevant_peaks:
+                    lines.append(f"  {pw.get('planet','?')} in {pw.get('sign','?')}: "
+                                 f"{pw.get('start_date','?')}–{pw.get('end_date','?')} | "
+                                 f"quality={pw.get('quality','?')}, SAV={pw.get('sav','?')}")
 
         return lines
 
@@ -1601,6 +1887,25 @@ class QuestionRouter:
         lines.append(f"TODAY: {self.today_str}  ← Hard boundary. Every date must be after this.")
         lines.append("")
 
+        # ── HOUSE LORD VERIFICATION TABLE ──────────────────────────────────
+        # Use the full pre-computed reference block (Western + Vedic + Bazi)
+        # from orchestrator._compute_house_lords() — prevents hallucination
+        lord_ref = chart_data.get("_house_lord_reference_block", "")
+        if lord_ref:
+            lines.append(lord_ref)
+        else:
+            # Fallback: compute Western-only from chart data
+            w_houses = w_nat.get("houses", {})
+            lines.append("── HOUSE LORD VERIFICATION (use these, not memory) ──")
+            for h in range(1, 13):
+                wh = w_houses.get(f"House_{h}", {})
+                cusp_sign = (wh.get("sign") or wh.get("cusp_sign") or
+                             wh.get("sign_name", "?"))
+                lord = self.SIGN_RULERS.get(cusp_sign, "?")
+                lines.append(f"  H{h}: cusp={cusp_sign} → lord={lord}")
+            lines.append("CRITICAL: These are the actual house lords for THIS chart.")
+        lines.append("")
+
         # TIER 1 — Universal
         lines.extend(self._build_tier1_universal(chart_data, ref))
         lines.append("")
@@ -1625,31 +1930,35 @@ class Archon:
     # ── Model selection per section type ─────────────────────────────────────
     # Override in config.py/settings if desired.
     MODEL_MAP = {
-        "oracle":       getattr(settings, "archon_model",       "gpt-4o"),
-        "natal":        getattr(settings, "archon_model",       "gpt-4o"),
-        "current":      getattr(settings, "archon_model",       "gpt-4o"),
-        "year_forecast":getattr(settings, "archon_model",       "gpt-4o"),
-        "directive":    getattr(settings, "archon_model",       "gpt-4o"),
+        "oracle":          getattr(settings, "archon_model", "gpt-4o"),
+        "natal":           getattr(settings, "archon_model", "gpt-4o"),
+        "current":         getattr(settings, "archon_model", "gpt-4o"),
+        "year_forecast":   getattr(settings, "archon_model", "gpt-4o"),
+        "almanac_summary": getattr(settings, "archon_model", "gpt-4o"),
+        "directive":       getattr(settings, "archon_model", "gpt-4o"),
     }
 
     TEMP_MAP = {
-        "oracle":        0.82,   # slightly warmer — hook writing
-        "natal":         0.70,   # precise diagnosis
-        "current":       0.60,   # factual briefing
-        "year_forecast": 0.68,   # precise + vivid
-        "directive":     0.55,   # crisp orders
+        "oracle":          0.50,   # warm but controlled — hook writing
+        "natal":           0.30,   # precise diagnosis — consistency critical
+        "current":         0.20,   # factual briefing — near-deterministic
+        "year_forecast":   0.30,   # precise + consistent predictions
+        "almanac_summary": 0.20,   # precision-first — data-grounded window map
+        "directive":       0.30,   # crisp orders
+        "questions":       0.20,   # Q&A answers must be reproducible
     }
 
     # gemini-2.5-pro counts thinking tokens against max_output_tokens.
     # At reasoning_effort="low": ~300-500 thinking tokens consumed.
     # Budget = (prose_words × 1.5 tokens/word) + 800 thinking buffer.
     MAX_TOKENS_MAP = {
-        "oracle":        1800,   # target ~220w prose + 800 thinking buffer (shorter cold read)
-        "natal":         4500,   # target ~460w prose + 800 thinking buffer (mechanisms format)
-        "current":       2000,   # target ~155w prose + 800 thinking buffer
-        "year_forecast": 5500,   # target ~620w prose + 800 thinking buffer
-        "directive":     3200,   # target ~310w prose + 800 thinking buffer
-        "questions":     8000,   # 5 questions × ~400-550w each + evidence blocks + buffer
+        "oracle":          1800,   # target ~220w prose + 800 thinking buffer (shorter cold read)
+        "natal":           4500,   # target ~460w prose + 800 thinking buffer (mechanisms format)
+        "current":         2000,   # target ~155w prose + 800 thinking buffer
+        "year_forecast":   5500,   # target ~620w prose + 800 thinking buffer
+        "almanac_summary": 6000,   # target ~900w + technique citations + The Chain paragraph
+        "directive":       4000,   # target ~540w prose (15yr orders × 2) + 800 buffer
+        "questions":      18000,   # 5 questions × ~700-800w + timing landscape + evidence blocks
     }
 
     # Keep thinking minimal for creative writing — output tokens matter more than reasoning depth
@@ -1658,6 +1967,11 @@ class Archon:
     def __init__(self):
         # Issue 5: caches year chapter summaries so Q&A can reference them
         self._almanac_cache: dict = {}
+        # Cross-section memory: tracks key predictions from each generated section
+        # so subsequent sections can be constrained to consistency
+        self._section_memory: list = []
+        # Verdict ledger: binding constraints from the Arbiter
+        self._verdict_ledger_block: str = ""
 
     def generate_report(self,
                         arbiter_synthesis: dict,
@@ -1666,15 +1980,29 @@ class Archon:
                         temporal_clusters: list = None,
                         user_questions: list = None,
                         query_context: dict = None,
-                        expert_analyses: list = None) -> str:
+                        expert_analyses: list = None,
+                        language: str = "en",
+                        original_questions: list = None,
+                        verdict_ledger: dict = None,
+                        citation_data: dict = None) -> dict:
         """
         Generate the Celestial Dossier.
-        user_questions: list of up to 5 question strings.
+        user_questions: list of up to 5 question strings (English).
         query_context: pre-built QueryContext dict from QueryEngine.
           If provided, steers every section toward the user's questions.
           If not provided but user_questions is, a simple Part IV is still generated.
         expert_analyses: list of dicts with keys 'system' and 'analysis' — raw expert
           outputs passed directly, bypassing Arbiter truncation (Issue 3).
+        language: "en" for English, "my" for Burmese (Myanmar). Burmese generates
+          both English and Burmese reports.
+        original_questions: original Burmese question strings (if input was Burmese),
+          used to display the original phrasing in the translated report.
+        verdict_ledger: dict with 'entries' and 'formatted_block' — binding predictions
+          from the Arbiter that all downstream sections must be consistent with.
+        citation_data: dict with 'top_predictions_block', 'per_house_blocks', 'formatter'
+          — evidence citation chains for traceable predictions.
+
+        Returns: dict with keys "en" (always) and optionally "my".
         """
         ref           = self._extract_reference_positions(chart_data)
         cluster_block = _format_clusters(temporal_clusters or [])
@@ -1686,8 +2014,24 @@ class Archon:
         # Issue 3: build expert block (4500 chars per expert, bypasses Arbiter truncation)
         expert_block = self._build_expert_block(expert_analyses)
 
-        # Issue 5: reset almanac cache for this run
+        # Build citation registry for post-generation validation
+        citation_registry = self._build_citation_registry(chart_data, ref, temporal_clusters or [])
+
+        # Store verdict ledger for injection into all section prompts
+        self._verdict_ledger_block = (verdict_ledger or {}).get("formatted_block", "")
+
+        # Store citation chains for injection into predictive sections
+        self._citation_block = (citation_data or {}).get("top_predictions_block", "")
+        self._citation_per_house = (citation_data or {}).get("per_house_blocks", {})
+        self._citation_formatter = (citation_data or {}).get("formatter", None)
+
+        # Reset per-run state
         self._almanac_cache = {}
+        self._section_memory = []
+        self._hard_rules = []
+
+        # Initialize universal post-generation validator
+        self._post_validator = PostValidator(chart_data)
 
         header   = self._generate_header(metadata, chart_data, ref)
         sections = []
@@ -1695,14 +2039,51 @@ class Archon:
 
         clean_questions = [q.strip() for q in (user_questions or []) if q and q.strip()][:5]
 
+        # Resolve which parts to generate
+        active_parts = set(settings.include_parts)
+        # Legacy alias: include_directive=False removes "III"
+        if not settings.include_directive and "III" in active_parts:
+            active_parts.discard("III")
+        print(f"   [Archon] Active parts: {sorted(active_parts)}")
+
         for sec_num in sorted(SECTION_DEFS.keys()):
             sd = SECTION_DEFS[sec_num]
+
+            # Skip parts not in active_parts
+            if sd["part"] not in active_parts:
+                continue
 
             # Skip questions section if no questions provided
             if sd["id"] == "questions" and not clean_questions:
                 continue
 
             print(f"   [Archon] Generating section {sec_num + 1}/{total}: {sd['title']}...")
+
+            # ── Questions section: use per-question QA pipeline (Audit 5) ──
+            if sd["id"] == "questions" and clean_questions:
+                try:
+                    content = self._generate_questions_via_pipeline(
+                        questions=clean_questions,
+                        chart_data=chart_data,
+                        ref=ref,
+                        temporal_clusters=temporal_clusters or [],
+                        citation_registry=citation_registry,
+                        verdict_ledger_block=self._verdict_ledger_block,
+                    )
+                    content = self._validate_degrees_internal(content, ref, sec_num)
+                    content = self._post_validator.validate_section(content, sec_num, is_qa=True)
+                    content = self._audit_banned_words(content, sec_num)
+                    content = self._audit_past_dates(content, sec_num)
+                    content = self._validate_citations(content, citation_registry)
+                    if expert_analyses:
+                        content = self._validate_consensus_claims(content, expert_analyses)
+                    sections.append(content)
+                except Exception as e:
+                    logger.error(f"QA pipeline failed, falling back to monolithic: {e}")
+                    # Fall through to monolithic generation below
+                    sd["_pipeline_failed"] = True
+                else:
+                    continue  # Pipeline succeeded, skip monolithic path
 
             prompt = self._build_section_prompt(
                 sec_num, sd, arbiter_synthesis, chart_data, ref,
@@ -1721,21 +2102,34 @@ class Archon:
                 model            = self.MODEL_MAP.get(sd["type"], settings.archon_model),
                 max_tokens       = self.MAX_TOKENS_MAP.get(sd["type"], 5000),
                 temperature      = self.TEMP_MAP.get(sd["type"], 0.70),
-                # Questions need careful date reasoning — use medium effort
-                reasoning_effort = "medium" if sd.get("id") == "questions" else self.ARCHON_REASONING_EFFORT,
+                # Questions: high reasoning. Year forecasts + almanac: medium (cross-reference dates).
+                reasoning_effort = (
+                    "high" if sd.get("id") == "questions"
+                    else "medium" if sd.get("type") in ("year_forecast", "almanac_summary")
+                    else self.ARCHON_REASONING_EFFORT
+                ),
             )
 
             if response.get("success"):
                 content = response["content"]
                 content = self._enforce_section_header(content, sd)
                 content = self._validate_degrees_internal(content, ref, sec_num)
+                content = self._post_validator.validate_section(content, sec_num)
                 content = self._audit_banned_words(content, sec_num)
                 content = self._audit_past_dates(content, sec_num)
+                content = self._validate_citations(content, citation_registry)
+                if expert_analyses:
+                    content = self._validate_consensus_claims(content, expert_analyses)
                 # Issue 5: cache year chapters so Q&A can reference them
                 if sd.get("type") == "year_forecast":
                     year_key = str(sd.get("target_year", ""))
                     if year_key:
-                        self._almanac_cache[year_key] = content[:700]
+                        self._almanac_cache[year_key] = content[:2000]
+                # Cross-section memory: extract key predictions for consistency
+                self._extract_section_predictions(sd, content)
+                # After Directive section: extract hard rules for Q&A enforcement
+                if sd.get("id") == "directive":
+                    self._extract_hard_rules(content)
                 sections.append(content)
             else:
                 err = response.get("error", "Unknown error")
@@ -1744,28 +2138,66 @@ class Archon:
                 )
                 logger.error(f"Section {sec_num} ({sd['id']}) failed: {err}")
 
-        # ── Assemble with part dividers ────────────────────────────────────
+        # ── Assemble English report ────────────────────────────────────────
+        generated_sec_nums = [
+            n for n in sorted(SECTION_DEFS.keys())
+            if not (SECTION_DEFS[n]["id"] == "questions" and not clean_questions)
+            and not (SECTION_DEFS[n]["part"] == "III" and not settings.include_directive)
+        ]
+        english_report = self._assemble_report(
+            header, sections, generated_sec_nums, clean_questions, temporal_clusters
+        )
+
+        result = {"en": english_report}
+
+        # ── Burmese translation pass ──────────────────────────────────────
+        if language == "my":
+            glossary = self._load_burmese_glossary()
+            if glossary:
+                print("   [Archon] Translating report to Burmese...")
+                burmese_header = self._translate_header(header, glossary)
+                burmese_sections = []
+                for i, (sec_num, eng_content) in enumerate(zip(generated_sec_nums, sections)):
+                    sd = SECTION_DEFS[sec_num]
+                    print(f"   [Archon] Translating {i+1}/{len(sections)}: {sd['title']}...")
+                    translated = self._translate_section(
+                        eng_content, glossary, sd.get("type", "")
+                    )
+                    burmese_sections.append(translated)
+                burmese_report = self._assemble_report(
+                    burmese_header, burmese_sections, generated_sec_nums,
+                    original_questions or clean_questions, temporal_clusters,
+                    burmese=True, glossary=glossary
+                )
+                result["my"] = burmese_report
+            else:
+                logger.error("Burmese glossary not found — skipping translation")
+
+        return result
+
+    def _assemble_report(self, header: str, sections: list,
+                         generated_sec_nums: list, clean_questions: list,
+                         temporal_clusters: list, burmese: bool = False,
+                         glossary: dict = None) -> str:
+        """Assemble final report from header + sections with part dividers."""
         full_report = header
 
         # Dashboard — immediately after header, before Part I
-        # Skip when questions are submitted: the report focus shifts to Q&A depth,
-        # not the year table. The storm windows are still used inside each answer.
         show_dashboard = temporal_clusters and not clean_questions
         if show_dashboard:
             full_report += _compute_year_dashboard(temporal_clusters)
 
-        part_labels = {
-            "I":   "\n\n---\n\n# PART I: THE NATIVITY\n\n---\n\n",
-            "II":  "\n\n---\n\n# PART II: THE FIVE-YEAR ALMANAC\n\n---\n\n",
-            "III": "\n\n---\n\n# PART III: THE DIRECTIVE\n\n---\n\n",
-            "IV":  "\n\n---\n\n# PART IV: YOUR QUESTIONS\n\n---\n\n",
-        }
+        if burmese and glossary:
+            part_labels = self._get_burmese_part_labels(glossary)
+        else:
+            part_labels = {
+                "I":   "\n\n---\n\n# PART I: THE NATIVITY\n\n---\n\n",
+                "II":  "\n\n---\n\n# PART II: THE FIFTEEN-YEAR ALMANAC\n\n---\n\n",
+                "III": "\n\n---\n\n# PART III: THE DIRECTIVE\n\n---\n\n",
+                "IV":  "\n\n---\n\n# PART IV: YOUR QUESTIONS\n\n---\n\n",
+            }
+
         current_part = None
-        # zip only the sections that were actually generated
-        generated_sec_nums = [
-            n for n in sorted(SECTION_DEFS.keys())
-            if not (SECTION_DEFS[n]["id"] == "questions" and not clean_questions)
-        ]
         for sec_num, sec_content in zip(generated_sec_nums, sections):
             sd   = SECTION_DEFS[sec_num]
             part = sd["part"]
@@ -1774,13 +2206,20 @@ class Archon:
                 current_part = part
             full_report += sec_content + "\n\n"
 
-        full_report += (
-            "\n\n---\n\n"
-            "*All planetary positions verified against Swiss Ephemeris. "
-            "Primary Direction arcs calculated via Regiomontanus method. "
-            "Parans computed using RAMC horizon-crossing method (Brady 1998)."
-            "Algorithmic synthesis and system architecture by Kyaw Ko Ko"
-        )
+        if burmese:
+            full_report += (
+                "\n\n---\n\n"
+                "*ဂြိုဟ်အနေအထားအားလုံးကို Swiss Ephemeris ဖြင့် အတည်ပြုထားပါသည်။ "
+                "အယ်ဂိုရစ်သမ် ပေါင်းစပ်မှုနှင့် စနစ်ဗိသုကာ - Kyaw Ko Ko*"
+            )
+        else:
+            full_report += (
+                "\n\n---\n\n"
+                "*All planetary positions verified against Swiss Ephemeris. "
+                "Primary Direction arcs calculated via Regiomontanus method. "
+                "Parans computed using RAMC horizon-crossing method (Brady 1998)."
+                "Algorithmic synthesis and system architecture by Kyaw Ko Ko*"
+            )
 
         return full_report
 
@@ -1788,27 +2227,64 @@ class Archon:
     # System Prompt Selector
     # ─────────────────────────────────────────────────────────────────────────
 
+    # Global narrative guardrails applied to EVERY section
+    _GLOBAL_NARRATIVE_RULES = """
+ABSOLUTE RULES (apply to ALL sections):
+1. NEVER output numerical scores, convergence values, or confidence percentages.
+   Use ONLY natural-language confidence tiers: "near-certain", "high-confidence",
+   "moderate", "emerging". Express certainty through prose, not numbers.
+2. NEVER use absolute certainty language: "absolute", "non-negotiable", "guaranteed",
+   "100%", "certain beyond doubt", "my certainty is absolute". Always preserve space
+   for free will and agency. Use: "strongly indicated", "the pattern powerfully
+   suggests", "the evidence overwhelmingly points to".
+3. NEVER give specific legal, financial, or medical advice. Do not cite specific
+   percentages for ownership, contract terms, dosages, or investment products.
+   Frame actionable guidance as: "the astrological pattern suggests consulting
+   a [financial advisor/solicitor/GP] about [topic]".
+4. SHADBALA INTEGRITY (HIGH PRIORITY): When a planet driving a positive prediction
+   is SEVERELY WEAKENED (< 3.5 Rupas) in Shadbala, you MUST:
+   (a) Name the weakness explicitly: "despite [planet]'s constitutionally low reserves..."
+   (b) Either cite a cancellation yoga or dasha support that compensates, OR
+   (c) Downgrade the prediction: "this outcome requires conscious effort and may
+       arrive with greater difficulty than the timing alone suggests."
+   NEVER predict "peaks of vitality" or "effortless success" for a weak planet.
+5. NEVER calculate or deduce planetary rulerships yourself. You MUST ONLY use the
+   house lordships explicitly provided in the HOUSE LORD REFERENCE block. If you
+   cannot find the lord for a house in the reference, do not claim one.
+6. NEVER refer to yourself by any name or title in the output. Never use first-person
+   pronouns (I, me, my) unless quoting the client. Never use "As your [title]...",
+   "To/From" headers, or letter-style formatting. Write in authoritative advisory voice.
+7. SYSTEM INTEGRITY: Western Tropical transit dates use Tropical house lords.
+   Vedic techniques (Dasha, Tajaka, Yogas) use Sidereal house lords.
+   NEVER cross-apply: e.g., do not say "Jupiter conjunct Sun activates the
+   5th house lord" if the house lord comes from the wrong zodiac system.
+   When systems agree on an outcome through DIFFERENT mechanisms, state both.
+"""
+
     def _get_system_prompt(self, sd: dict) -> str:
         t = sd["type"]
         header = sd["header"]
         if t == "oracle":
-            return ORACLE_PROMPT
+            base = ORACLE_PROMPT
         elif t == "natal":
-            return NATAL_PROMPT.replace("{HEADER}", header)
+            base = NATAL_PROMPT.replace("{HEADER}", header)
         elif t == "current":
-            return CURRENT_CONFIG_PROMPT
+            base = CURRENT_CONFIG_PROMPT
         elif t == "year_forecast":
             year = str(sd.get("target_year", ""))
-            return YEAR_FORECAST_PROMPT.replace("{YEAR}", year).replace("{YEAR}", year)
+            base = YEAR_FORECAST_PROMPT.replace("{YEAR}", year).replace("{YEAR}", year)
         elif t == "almanac_summary":
-            return ALMANAC_SUMMARY_PROMPT
+            base = ALMANAC_SUMMARY_PROMPT
         elif t == "questions":
-            return QUESTIONS_PROMPT
+            base = QUESTIONS_PROMPT
         elif t == "directive":
             if sd["id"] == "warning":
-                return WARNING_PROMPT
-            return DIRECTIVE_PROMPT
-        return NATAL_PROMPT.replace("{HEADER}", header)
+                base = WARNING_PROMPT
+            else:
+                base = DIRECTIVE_PROMPT
+        else:
+            base = NATAL_PROMPT.replace("{HEADER}", header)
+        return base + self._GLOBAL_NARRATIVE_RULES
 
     # ─────────────────────────────────────────────────────────────────────────
     # Section Prompt Builder
@@ -1843,12 +2319,12 @@ class Archon:
         # Inject wealth score block into material_world section
         if wealth_block and sd.get("id") == "material_world":
             extra = (
-                "=== WEALTH CAPACITY SCORE (pre-computed from chart data) ===\n"
+                "=== WEALTH CAPACITY BLOCK (pre-computed from chart data) ===\n"
                 + wealth_block
-                + "\nInclude this score verbatim as the very first element of the section, "
-                  "before any mechanism header. It is a mathematical calculation — do not "
-                  "soften, modify, or qualify it. Present it exactly as shown.\n"
-                + "=== END SCORE BLOCK ===\n\n"
+                + "\nInclude this block verbatim as the very first element of the section, "
+                  "before any mechanism header. Do NOT add numerical scores or ratings "
+                  "beyond what is shown. Present exactly as provided.\n"
+                + "=== END WEALTH BLOCK ===\n\n"
                 + extra
             )
 
@@ -1857,11 +2333,10 @@ class Archon:
             industries = ", ".join(wealth_score.get("industries", [])[:4])
             risk = wealth_score.get("risk_flag", False)
             eighth = wealth_score.get("eighth_planets", [])
-            ws_score = wealth_score.get("score", 5.0)
             tier = wealth_score.get("tier", "")
             hard_rules_ctx = (
                 "=== CHART FINANCIAL PROFILE (for Directive hard rules) ===\n"
-                f"Wealth Capacity: {ws_score}/10 — {tier}\n"
+                f"Wealth Capacity: {tier}\n"
                 f"Primary wealth channels: {industries}\n"
             )
             if risk and eighth:
@@ -1884,6 +2359,11 @@ class Archon:
             if steering_block:
                 extra = steering_block + "\n\n" + extra
 
+        # ── Template Fact Anchoring: inject per-section house lord facts ───────
+        # Pre-fills correct house lords so the LLM writes around facts, not guesses
+        house_lord_facts = self._build_house_lord_facts(sd, chart_data)
+        if house_lord_facts:
+            extra = house_lord_facts + "\n\n" + extra
 
         graph_section = ""
         if _rule_querier is not None:
@@ -1944,6 +2424,25 @@ class Archon:
                     "",
                 ]
 
+            # Inject verdict ledger as binding constraint for Q&A answers
+            if self._verdict_ledger_block:
+                parts += [self._verdict_ledger_block, ""]
+
+            # Inject evidence citation chains for Q&A answers
+            if self._citation_block:
+                parts += [self._citation_block, ""]
+
+            # Inject cross-section memory so Q&A is consistent with year chapters
+            if self._section_memory:
+                memory_block = self._format_section_memory()
+                if memory_block:
+                    parts += [memory_block, ""]
+
+            # Inject master timeline so Q&A uses same date windows as Almanac
+            master_tl = self._build_master_timeline()
+            if master_tl:
+                parts += [master_tl, ""]
+
             # Issue 5: inject almanac context so Q&A can reference year windows
             if self._almanac_cache:
                 almanac_lines = ["=== ALMANAC CONTEXT (reference these windows when answering timing questions) ==="]
@@ -1985,6 +2484,20 @@ class Archon:
                 "=== END EXPERT ANALYSES ===",
             ]
 
+        # Inject verdict ledger as binding constraint (for predictive sections)
+        if is_predictive and self._verdict_ledger_block:
+            parts.append(self._verdict_ledger_block)
+
+        # Inject evidence citation chains (for predictive sections)
+        if is_predictive and self._citation_block:
+            parts.append(self._citation_block)
+
+        # Inject cross-section memory for consistency + deduplication (all sections after first)
+        if self._section_memory:
+            memory_block = self._format_section_memory()
+            if memory_block:
+                parts.append(memory_block)
+
         parts += [
             graph_section,
             cluster_section,
@@ -2001,8 +2514,249 @@ class Archon:
         return "\n\n".join(p for p in parts if p)
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Cross-section memory — consistency enforcement
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _extract_section_predictions(self, sd: dict, content: str):
+        """Extract key predictions AND explained themes from a generated section.
+
+        Captures:
+        1. Date-anchored predictions for consistency (predictive sections only)
+        2. Explained mechanisms/themes for deduplication (all sections)
+        """
+        import re
+        section_id = sd.get("id", "unknown")
+        predictions = []
+        themes_explained = []
+
+        # ── Theme extraction (all sections) ──────────────────────────────────
+        # Capture bold mechanism headers like **THE STRUCTURAL AUTHORITY**
+        for m in re.finditer(r'\*\*([A-Z][A-Z\s\':–-]{4,50})\*\*', content):
+            theme = m.group(1).strip()
+            if len(theme) > 5:
+                themes_explained.append(theme)
+
+        # Capture planet-theme patterns mentioned in depth (2+ sentences)
+        planet_themes = set()
+        for planet in ["Saturn", "Jupiter", "Mars", "Venus", "Mercury", "Sun", "Moon"]:
+            count = content.count(planet)
+            if count >= 3:  # mentioned 3+ times = explained in depth
+                planet_themes.add(planet)
+
+        # ── Prediction extraction (predictive sections only) ─────────────────
+        if sd.get("type") in ("year_forecast", "almanac_summary", "directive"):
+            likely_match = re.search(
+                r'(?:What is most likely to happen[^:]*:)\s*(.+?)(?:\n\n|\*\*)',
+                content, re.DOTALL
+            )
+            if likely_match:
+                predictions.append(likely_match.group(1).strip()[:300])
+
+            for m in re.finditer(
+                r'((?:NEAR-CERTAIN|HIGH-CONFIDENCE)[^\n]*(?:\n[^\n]+){0,2})',
+                content
+            ):
+                pred_text = m.group(1).strip()[:200]
+                if pred_text:
+                    predictions.append(pred_text)
+
+            action_match = re.search(
+                r'(?:The one action \d{4} demands:)\s*(.+?)(?:\n\n|$)',
+                content, re.DOTALL
+            )
+            if action_match:
+                predictions.append(action_match.group(1).strip()[:200])
+
+            # Extract HARD RULE text from directive sections for Q&A binding
+            if sd.get("id") == "directive":
+                for m in re.finditer(r'\*\*HARD RULE[:\s]*\*\*\s*(.+?)(?:\n|$)', content):
+                    predictions.append(f"HARD RULE: {m.group(1).strip()}")
+
+        if predictions or themes_explained:
+            self._section_memory.append({
+                "section": section_id,
+                "title": sd.get("title", ""),
+                "predictions": predictions[:4],
+                "themes": themes_explained[:6],
+                "planets_explained": sorted(planet_themes),
+            })
+
+    def _extract_hard_rules(self, directive_content: str):
+        """Extract HARD RULE constraints from generated Directive section.
+
+        Parses rules into structured form and updates the PostValidator
+        so that subsequent Q&A sections are checked for violations.
+        """
+        import re
+        parsed_rules = []
+        for m in re.finditer(
+            r'\*\*HARD RULE[:\s]*\*\*\s*(.+?)(?:\n|$)', directive_content
+        ):
+            rule_text = m.group(1).strip()
+            parsed = HardRuleEnforcer.parse_hard_rule(rule_text)
+            parsed_rules.append(parsed)
+            logger.info(f"Extracted hard rule: {rule_text[:80]}...")
+
+        if parsed_rules:
+            self._hard_rules = parsed_rules
+            self._post_validator.update_hard_rules(parsed_rules)
+            logger.info(
+                f"PostValidator updated with {len(parsed_rules)} hard rule(s) "
+                f"for Q&A enforcement"
+            )
+
+    def _format_section_memory(self) -> str:
+        """Format cross-section memory into a constraint block for prompts.
+
+        Includes both consistency rules (don't contradict) and dedup rules
+        (don't re-explain themes already covered in earlier sections).
+        """
+        if not self._section_memory:
+            return ""
+
+        lines = [
+            "═══ CROSS-SECTION MEMORY (previous sections — be consistent, avoid repetition) ═══",
+            "CONSISTENCY: Do NOT contradict these predictions. Use the same date windows.",
+            "DEDUP: Themes already explained MUST NOT be re-explained. Reference in ONE sentence max.",
+            "",
+        ]
+
+        all_themes = []
+        for mem in self._section_memory[-8:]:
+            section_lines = [f"[{mem['title']}]:"]
+            for pred in mem.get("predictions", []):
+                section_lines.append(f"  • {pred}")
+            themes = mem.get("themes", [])
+            if themes:
+                section_lines.append(f"  Themes covered: {', '.join(themes)}")
+                all_themes.extend(themes)
+            planets = mem.get("planets_explained", [])
+            if planets:
+                section_lines.append(f"  Planets explained in depth: {', '.join(planets)}")
+            lines.extend(section_lines)
+            lines.append("")
+
+        if all_themes:
+            lines.append("DO NOT RE-EXPLAIN these themes (one-sentence reference max):")
+            for t in dict.fromkeys(all_themes):  # deduplicate while preserving order
+                lines.append(f"  ✗ {t}")
+            lines.append("")
+
+        lines.append("═══ END CROSS-SECTION MEMORY ═══")
+        return "\n".join(lines)
+
+    def _build_master_timeline(self) -> str:
+        """Extract key date windows from year chapters for Q&A binding."""
+        if not self._section_memory:
+            return ""
+        lines = [
+            "=== MASTER TIMELINE (binding — use these exact date windows) ===",
+            "The Almanac sections established these windows. Q&A answers MUST",
+            "reference the SAME date ranges for the same events. Do NOT invent",
+            "different dates for events already timed in the Almanac.",
+        ]
+        has_predictions = False
+        for mem in self._section_memory:
+            preds = mem.get("predictions", [])
+            if preds:
+                has_predictions = True
+                lines.append(f"\n[{mem['title']}]:")
+                for pred in preds:
+                    lines.append(f"  • {pred}")
+        if not has_predictions:
+            return ""
+        lines.append("\n=== END MASTER TIMELINE ===")
+        return "\n".join(lines)
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Section-specific data injections
     # ─────────────────────────────────────────────────────────────────────────
+
+    # ── Template Fact Anchoring ─────────────────────────────────────────────
+
+    # Maps section domains to house numbers that MUST have correct lords cited
+    _SECTION_HOUSE_MAP = {
+        "material_world":  [2, 6, 10, 11],    # wealth, work, career, gains
+        "inner_world":     [5, 7],             # romance, marriage
+        "karmic_mandate":  [1, 8, 12],         # self, transformation, liberation
+        "year_2026":       [1, 2, 7, 10],      # commonly referenced houses
+        "year_2027":       [1, 2, 5, 7, 10],
+        "year_2028":       [1, 2, 4, 5, 10],
+        "year_2029":       [1, 2, 5, 7, 10],
+        "year_2030":       [1, 2, 4, 5, 10],
+        "directive":       [2, 5, 7, 10],
+        "almanac_summary": [2, 4, 5, 7, 10],
+        "questions":       [1, 2, 4, 5, 7, 10],  # broad coverage for Q&A
+    }
+
+    def _build_house_lord_facts(self, sd: dict, chart_data: dict) -> str:
+        """Build a MANDATORY FACTS block with pre-computed house lords for this section.
+
+        This pre-fills correct house lords into the prompt so the LLM writes
+        around verified facts rather than guessing from memory.
+        """
+        section_id = sd.get("id", "")
+        houses = self._SECTION_HOUSE_MAP.get(section_id)
+        if not houses:
+            return ""
+
+        house_lords = chart_data.get("house_lords", {})
+        western_lords = house_lords.get("western_lords", {})
+        vedic_lords = house_lords.get("vedic_lords", {})
+
+        if not western_lords and not vedic_lords:
+            return ""
+
+        v_natal = chart_data.get("vedic", {}).get("natal", {})
+        v_asc_sign = v_natal.get("ascendant_sign", "")
+        vedic_sign_list = list({
+            "Mesha": "Mars", "Vrishabha": "Venus", "Mithuna": "Mercury",
+            "Karka": "Moon", "Simha": "Sun", "Kanya": "Mercury",
+            "Tula": "Venus", "Vrischika": "Mars", "Dhanus": "Jupiter",
+            "Makara": "Saturn", "Kumbha": "Saturn", "Meena": "Jupiter",
+        }.keys())
+
+        # House domain names for context
+        HOUSE_DOMAINS = {
+            1: "self/body", 2: "wealth/finance", 3: "communication",
+            4: "home/property", 5: "children/creativity", 6: "health/work",
+            7: "marriage/partnership", 8: "transformation/shared resources",
+            9: "higher learning/dharma", 10: "career/public life",
+            11: "gains/aspirations", 12: "liberation/loss",
+        }
+
+        lines = [
+            "=== MANDATORY HOUSE LORD FACTS (pre-computed — use these, NEVER deduce your own) ===",
+        ]
+
+        for h in sorted(houses):
+            domain = HOUSE_DOMAINS.get(h, "")
+            v_lord = vedic_lords.get(h, "")
+            w_lord = western_lords.get(h, "")
+
+            # Compute Vedic sign for this house
+            v_sign = ""
+            if v_asc_sign and v_asc_sign in vedic_sign_list:
+                asc_idx = vedic_sign_list.index(v_asc_sign)
+                v_sign = vedic_sign_list[(asc_idx + h - 1) % 12]
+
+            parts = []
+            if v_lord:
+                vedic_desc = f"Vedic: {v_sign + ' → ' if v_sign else ''}{v_lord}"
+                parts.append(vedic_desc)
+            if w_lord:
+                parts.append(f"Western: {w_lord}")
+
+            if parts:
+                lines.append(
+                    f"  House {h} ({domain}): {' | '.join(parts)}"
+                )
+
+        lines.append("When citing house lords, use ONLY the values above. "
+                      "If a house lord differs between systems, specify which system.")
+        lines.append("=== END HOUSE LORD FACTS ===")
+
+        return "\n".join(lines)
 
     def _section_specific_data(self, sec_num: int, sd: dict,
                                 chart_data: dict, ref: dict,
@@ -2316,9 +3070,17 @@ class Archon:
             text = exp.get("analysis", "") or ""
             if not text:
                 continue
-            limit     = EXPERT_CHAR_LIMITS.get(system_name, EXPERT_CHAR_LIMIT)
-            truncated = (text[:limit] + f"\n[...{len(text)-limit} chars omitted]"
-                         if len(text) > limit else text)
+            limit = EXPERT_CHAR_LIMITS.get(system_name, EXPERT_CHAR_LIMIT)
+            if len(text) > limit:
+                # Sentence-boundary truncation: avoid mid-sentence cuts
+                cut = text[:limit]
+                last_period = max(cut.rfind('. '), cut.rfind('.\n'), cut.rfind('.\r'))
+                if last_period > limit * 0.8:
+                    cut = text[:last_period + 1]
+                omitted = len(text) - len(cut)
+                truncated = cut + f"\n[...{omitted} chars omitted]"
+            else:
+                truncated = text
             lines.append(f"--- {system_name} Expert ---")
             lines.append(truncated)
             lines.append("")
@@ -2414,7 +3176,7 @@ class Archon:
         # ── Executive summary — always useful ────────────────────────────────
         exec_sum = synthesis.get("executive_summary", "")
         if exec_sum:
-            lines.append(f"Executive summary: {exec_sum[:300]}")
+            lines.append(f"Executive summary: {exec_sum[:500]}")
 
         # ── Key planets — always useful ───────────────────────────────────────
         key_planets = synthesis.get("key_planets", [])
@@ -2437,7 +3199,7 @@ class Archon:
                 theme   = cp.get("theme", "?")
                 conf    = cp.get("confidence", 0)
                 systems = ", ".join(cp.get("systems_agreeing", []))
-                desc    = cp.get("description", "")[:200]
+                desc    = cp.get("description", "")[:350]
                 lines.append(f"  • [{conf:.0f}%] {theme} [{systems}]: {desc}")
 
         # ── Top predictions — for predictive sections ─────────────────────────
@@ -2450,7 +3212,7 @@ class Archon:
                     dates      = pred.get("date_range", "?")
                     conf       = pred.get("confidence", 0)
                     systems    = ", ".join(pred.get("systems", []))
-                    evidence   = pred.get("evidence", "")[:100]
+                    evidence   = pred.get("evidence", "")[:250]
                     lines.append(f"  • [{conf:.0f}%] {dates}: {prediction} [{systems}]")
                     if evidence:
                         lines.append(f"    Evidence: {evidence}")
@@ -2463,8 +3225,8 @@ class Archon:
                 for cp in crit[:6]:
                     period   = cp.get("period", "?")
                     intensity = cp.get("intensity", 0)
-                    meaning  = cp.get("meaning", "")[:150]
-                    action   = cp.get("action",  "")[:100]
+                    meaning  = cp.get("meaning", "")[:250]
+                    action   = cp.get("action",  "")[:200]
                     systems  = ", ".join(cp.get("systems_agreeing", []))
                     lines.append(f"  • [{intensity:.0f}] {period} [{systems}]: {meaning}")
                     if action:
@@ -2478,7 +3240,7 @@ class Archon:
             if section_type == "natal":
                 lines.append(f"Unified synthesis narrative:\n{narrative[:3000]}")
             else:
-                lines.append(f"Unified synthesis narrative:\n{narrative[:2000]}")
+                lines.append(f"Unified synthesis narrative:\n{narrative[:3000]}")
 
         # ── Contradictions — natal sections benefit from knowing tensions ──────
         if section_type == "natal":
@@ -2489,13 +3251,49 @@ class Archon:
                     tension    = ct.get("tension", "?")
                     resolution = ct.get("resolution", "")
                     navigate   = ct.get("navigate_by", "")
-                    lines.append(f"  • Tension: {tension[:100]}")
+                    lines.append(f"  • Tension: {tension[:200]}")
                     if resolution:
-                        lines.append(f"    Resolution: {resolution[:100]}")
+                        lines.append(f"    Resolution: {resolution[:200]}")
                     if navigate:
-                        lines.append(f"    Navigate by: {navigate[:80]}")
+                        lines.append(f"    Navigate by: {navigate[:150]}")
 
         lines.append("=== END SYNTHESIS ===")
+        return "\n".join(lines)
+
+    def _build_natal_placements_header(self, chart_data: dict) -> str:
+        """Build an immutable planet→house mapping header to prevent cross-section contradictions."""
+        lines = [
+            "=== MANDATORY NATAL PLACEMENTS (immutable — use these exact house placements) ===",
+        ]
+        # Western (Tropical / Placidus)
+        w_plac = chart_data.get("western", {}).get("natal", {}).get("placements", {})
+        if w_plac:
+            lines.append("WESTERN (Tropical/Placidus):")
+            planet_order = ["Sun","Moon","Mercury","Venus","Mars","Jupiter","Saturn",
+                            "Uranus","Neptune","Pluto","North Node","South Node",
+                            "Chiron","Ascendant","Midheaven"]
+            for p in planet_order:
+                pd = w_plac.get(p, {})
+                if isinstance(pd, dict) and pd.get("sign"):
+                    house = pd.get("house", "?")
+                    sign = pd.get("sign", "?")
+                    deg = pd.get("degree", pd.get("deg_in_sign", "?"))
+                    lines.append(f"  {p}: House {house}, {sign} {deg}")
+        # Vedic (Sidereal / Whole Sign)
+        v_plac = chart_data.get("vedic", {}).get("natal", {}).get("placements", {})
+        if v_plac:
+            lines.append("VEDIC (Sidereal/Whole Sign):")
+            for p in ["Sun","Moon","Mercury","Venus","Mars","Jupiter","Saturn",
+                       "Rahu","Ketu","Ascendant"]:
+                pd = v_plac.get(p, {})
+                if isinstance(pd, dict) and (pd.get("sign") or pd.get("rashi")):
+                    house = pd.get("house", pd.get("bhava", "?"))
+                    sign = pd.get("sign", pd.get("rashi", "?"))
+                    deg = pd.get("degree", pd.get("deg_in_sign", "?"))
+                    lines.append(f"  {p}: House {house}, {sign} {deg}")
+        lines.append("CRITICAL: These placements are computed from the birth chart. NEVER assign a")
+        lines.append("planet to a different house than shown here. If Western and Vedic differ, state BOTH.")
+        lines.append("=== END NATAL PLACEMENTS ===")
         return "\n".join(lines)
 
     def _build_natal_block(self, ref: dict, chart_data: dict = None) -> str:
@@ -2503,6 +3301,10 @@ class Archon:
         lines = [f"TODAY: {today_str}  ← All timing must be AFTER this date.",
                  "=== MANDATORY NATAL DATA — USE THESE EXACT VALUES ==="
         ]
+        # ── Immutable natal placements header ──
+        if chart_data:
+            lines.append(self._build_natal_placements_header(chart_data))
+            lines.append("")
         lines.append("FORMAT: DEGREES° ARCMINUTES' SIGN  (e.g., '19° 43' Cancer')")
         lines.append("")
 
@@ -2515,6 +3317,14 @@ class Archon:
             data = ref.get(planet)
             if data and isinstance(data, dict):
                 lines.append(f"{planet}: {data['dms']} {data['sign']}  (lon: {data['longitude']:.4f}°)")
+
+        # ── House Lord Reference (mandatory — prevents LLM hallucination) ────
+        hlr = chart_data.get("_house_lord_reference_block", "") if chart_data else ""
+        if hlr:
+            lines.append("")
+            lines.append("--- HOUSE LORD REFERENCE (MANDATORY — use these, NEVER deduce your own) ---")
+            lines.append(hlr)
+            lines.append("--- END HOUSE LORD REFERENCE ---")
 
         lines.append("")
         lines.append("--- ESSENTIAL CHART FACTORS ---")
@@ -2612,7 +3422,12 @@ class Archon:
                         try:
                             r = float(rupas)
                             strength_label = "STRONG" if r >= 7 else ("ADEQUATE" if r >= 5 else ("WEAK" if r >= 3.5 else "VERY WEAK"))
-                            lines.append(f"  {p}: {r:.2f} Rupas — {strength_label}  (ishta={ishta}, kashta={kashta})")
+                            if r < 3.5:
+                                lines.append(f"  {p}: {r:.2f} Rupas — ⚠️ SEVERELY WEAKENED ⚠️  (ishta={ishta}, kashta={kashta})")
+                                lines.append(f"    → If {p} anchors a prediction, you MUST acknowledge this weakness.")
+                                lines.append(f"    → Explain HOW the prediction manifests DESPITE weakness (cancellation yoga, dasha support, etc.)")
+                            else:
+                                lines.append(f"  {p}: {r:.2f} Rupas — {strength_label}  (ishta={ishta}, kashta={kashta})")
                         except (TypeError, ValueError):
                             lines.append(f"  {p}: {rupas} Rupas")
 
@@ -2783,8 +3598,8 @@ class Archon:
 
         profecs  = w_pred.get("profections_timeline", [])
         transits = w_pred.get("transits_timeline", [])
-        sr       = w_pred.get("solar_returns", [])[:5]
-        tajaka   = v_pred.get("tajaka", [])[:5]
+        sr       = w_pred.get("solar_returns", [])[:15]
+        tajaka   = v_pred.get("tajaka", [])[:15]
         liu_nian = b_pred.get("liu_nian_timeline", [])
         da_yun   = b_pred.get("da_yun", {})
         zr       = hell.get("zodiacal_releasing", {})
@@ -2792,14 +3607,25 @@ class Archon:
 
         out = []
         out.append(f"TODAY: {today_str}  \u2190 THIS IS THE HARD DATE BOUNDARY. NO DATES BEFORE THIS.")
-        out.append("=== PREDICTIVE DATA BLOCK (Almanac sections) ===")
+        out.append("=== PREDICTIVE DATA BLOCK (Almanac sections — 15-YEAR WINDOW 2026–2040) ===")
         out.append("Do not re-diagnose the natal chart. Use natal positions only as brief anchors.")
+        # ── Immutable natal placements header ──
+        out.append("")
+        out.append(self._build_natal_placements_header(chart_data))
         out.append("")
         out.append("--- NATAL ANCHORS (reference only) ---")
         for p in ["Sun", "Moon", "Ascendant", "Midheaven", "Saturn"]:
             if p in ref:
                 d = ref[p]
                 out.append(f"{p}: {d.get('dms','?')} {d.get('sign','?')}")
+        # ── House Lord Reference (mandatory — prevents hallucination) ────
+        hlr = chart_data.get("_house_lord_reference_block", "")
+        if hlr:
+            out.append("")
+            out.append("--- HOUSE LORD REFERENCE (MANDATORY — use these, NEVER deduce your own) ---")
+            out.append(hlr)
+            out.append("--- END HOUSE LORD REFERENCE ---")
+
         out.append("")
         out.append("--- ACTIVE TIME LORDS ---")
         out.append(f"Maha Dasha: {ref.get('_maha_dasha')} ({ref.get('_dasha_years_left')} yrs remaining)")
@@ -2812,7 +3638,7 @@ class Archon:
                        f"({cyun.get('stem_element','?')}/{cyun.get('branch_element','?')}, "
                        f"age {cyun.get('start_age','?')}–{cyun.get('end_age','?')})")
         out.append("")
-        out.append("--- PROFECTIONS 2026-2030 (Western annual) ---")
+        out.append("--- PROFECTIONS 2026-2040 (Western annual — all 15 years) ---")
         out.append(json.dumps(profecs, default=str, indent=None))
 
         # Hellenistic annual profection
@@ -2826,7 +3652,10 @@ class Archon:
             out.append(f"  Theme: {hell_prof.get('theme', hell_prof.get('interpretation','?'))}")
 
         out.append("")
-        out.append("--- OUTER PLANET TRANSIT ASPECT HITS (exact dates) ---")
+        out.append("--- OUTER PLANET TRANSIT ASPECT HITS (exact dates — WESTERN TROPICAL zodiac) ---")
+        out.append("NOTE: All outer transit dates below are computed in the WESTERN TROPICAL zodiac.")
+        out.append("When citing these dates, use ONLY Western/Tropical house lords and sign placements.")
+        out.append("Do NOT apply Vedic/Sidereal house rulers to Western transit dates.")
         if outer.get("summary_block"):
             out.append(outer["summary_block"])
         else:
@@ -2851,10 +3680,10 @@ class Archon:
         out.append("--- TAJAKA (VEDIC ANNUAL CHARTS) ---")
         out.append(json.dumps(tajaka, default=str, indent=None))
 
-        # Liu Nian with 10-god labels
+        # Liu Nian with 10-god labels — full 15-year window
         out.append("")
-        out.append("--- LIU NIAN (BAZI ANNUAL PILLARS) ---")
-        for ln in liu_nian[:5]:
+        out.append("--- LIU NIAN (BAZI ANNUAL PILLARS 2026-2040) ---")
+        for ln in liu_nian[:15]:
             if isinstance(ln, dict):
                 yr     = ln.get("year", "?")
                 pillar = f"{ln.get('stem','?')}{ln.get('branch','?')}"
@@ -2887,13 +3716,13 @@ class Archon:
         out.append(json.dumps(kakshya, default=str, indent=None)[:1500])
 
         out.append("")
-        out.append("--- PRIMARY DIRECTIONS (Key) ---")
+        out.append("--- PRIMARY DIRECTIONS 2026-2040 (all arcs) ---")
         pd_dirs = w_pred.get("primary_directions", {})
         all_dirs = []
         for cat in pd_dirs.values():
             if isinstance(cat, list):
-                all_dirs.extend(cat[:2])
-        out.append(json.dumps(all_dirs[:6], default=str, indent=None))
+                all_dirs.extend(cat[:5])
+        out.append(json.dumps(all_dirs[:20], default=str, indent=None))
 
         # Zodiacal Releasing — formatted text, not raw dict
         if zr:
@@ -3009,7 +3838,7 @@ class Archon:
         if yun_pills:
             ref["_current_da_yun"] = yun_pills[0]
         liu_nian = chart_data.get("bazi", {}).get("predictive", {}).get("liu_nian_timeline", [])
-        ref["_liu_nian"] = liu_nian[:5]
+        ref["_liu_nian"] = liu_nian[:15]
 
         hell    = chart_data.get("hellenistic", {})
         lots    = hell.get("lots", {})
@@ -3189,17 +4018,23 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
 
     def _validate_degrees_internal(self, content: str, ref: dict, sec_num: int) -> str:
         """
-        Find and FIX degree hallucinations in natal/oracle sections.
+        Find and FIX degree hallucinations in all sections.
         Replaces wrong degree strings with the verified value from the ref dict.
         Returns corrected content.
 
         Strategy: if LLM writes "12° 33' Leo" but ref shows Sun at 27° 10' Leo,
         and no other planet is in Leo, we replace the wrong value with the correct one.
         Only corrects when match is unambiguous (exactly one planet in that sign).
+
+        For predictive/year_forecast sections, uses a higher threshold (3°) to avoid
+        false corrections on transiting planet positions which change over time.
         """
         sd = SECTION_DEFS.get(sec_num, {})
-        if sd.get("type") not in ("natal", "oracle"):
-            return content
+        sec_type = sd.get("type", "")
+        # Higher threshold for predictive sections (transit degrees shift)
+        is_predictive = sec_type in ("year_forecast", "predictive", "questions")
+        single_threshold = 3.0 if is_predictive else 1.0
+        ambiguous_threshold = 5.0 if is_predictive else 2.0
 
         # Build sign → [(planet, degree, dms)] lookup
         sign_to_planets: dict = {}
@@ -3234,7 +4069,7 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
                 # Unambiguous: exactly one body in this sign
                 truth = planets_in_sign[0]
                 delta = abs(claimed_dec - truth["degree"])
-                if delta > 1.0:
+                if delta > single_threshold:
                     correct_str = f"{truth['dms']}' {claimed_sign}"
                     logger.info(
                         f"Sec{sec_num} DEGREE FIX: {original} → {correct_str} "
@@ -3246,7 +4081,7 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
                 # Multiple planets in same sign — find closest match
                 best = min(planets_in_sign, key=lambda p: abs(p["degree"] - claimed_dec))
                 delta = abs(claimed_dec - best["degree"])
-                if delta > 2.0:  # Higher threshold when ambiguous
+                if delta > ambiguous_threshold:
                     correct_str = f"{best['dms']}' {claimed_sign}"
                     logger.info(
                         f"Sec{sec_num} DEGREE FIX (ambiguous): {original} → {correct_str} "
@@ -3268,24 +4103,44 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
 
     def _audit_banned_words(self, content: str, sec_num: int) -> str:
         """
-        Scan generated text for banned words and log violations.
-        Does NOT modify the text (that would corrupt prose) — only logs so
-        you can track which prompts need tightening.
-
-        Banned words are those that signal vague, padded, or un-grounded writing:
-        the kind that made the original report feel "accurate but boring."
+        Scan for banned words, log violations, and replace the worst offenders
+        with better alternatives so the final report is clean.
         """
         BANNED = {
             # Cosmic fluff
             "journey", "tapestry", "dance", "weave", "cosmic", "realm",
             "vibration", "manifest", "manifestation", "universe",
             # Weasel hedges
-            "potential", "perhaps", "maybe", "might suggest",
+            "perhaps", "maybe", "might suggest",
             # Agency-free descriptors
-            "deeply", "truly", "intricate", "multifaceted", "dynamic interplay",
+            "intricate", "multifaceted", "dynamic interplay",
             "embody", "explore",
             # Encouragement language (wrong tone for this report)
             "trust yourself", "remember that", "you deserve", "nurture",
+            # Overused verbal tics (appeared 15+ times across reports)
+            "this is not speculation; it is structural",
+            "this is not speculation",
+            "it is structural",
+        }
+        # Replacements for the most common offenders (case-preserving)
+        REPLACEMENTS = {
+            "potential": "capacity",
+            "deeply": "",          # often filler — just remove
+            "truly": "",           # filler
+            "journey": "path",
+            "tapestry": "structure",
+            "manifest": "produce",
+            "manifestation": "outcome",
+            "multifaceted": "complex",
+            "cosmic": "structural",
+            "realm": "domain",
+            "vibration": "signal",
+            "embody": "express",
+            "explore": "examine",
+            "nurture": "develop",
+            "this is not speculation; it is structural": "the convergence data supports this",
+            "this is not speculation": "the data supports this",
+            "it is structural": "it is data-backed",
         }
         # Tone-skew tracking (not banned, but flagged if overused together)
         TONE_SKEW = [
@@ -3293,29 +4148,42 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
             "collapse", "rubble", "dismantl", "isolat", "destabil",
         ]
 
-        sd_id    = SECTION_DEFS.get(sec_num, {}).get("id", f"sec{sec_num}")
-        lower    = content.lower()
-        found    = []
+        sd_id = SECTION_DEFS.get(sec_num, {}).get("id", f"sec{sec_num}")
+        lower = content.lower()
+        found = []
         for word in BANNED:
-            # Case-insensitive whole-word check
             pattern = r"\b" + re.escape(word) + r"\b"
             matches = re.findall(pattern, lower)
             if matches:
                 found.append(f"'{word}' ×{len(matches)}")
 
+        # Apply replacements
+        for word, replacement in REPLACEMENTS.items():
+            pattern = re.compile(r"\b" + re.escape(word) + r"\b", re.IGNORECASE)
+            if pattern.search(content):
+                found_word = True
+                if replacement:
+                    content = pattern.sub(replacement, content)
+                else:
+                    # Remove the word and clean up double spaces
+                    content = pattern.sub("", content)
+                    content = re.sub(r"  +", " ", content)
+                    content = re.sub(r" ,", ",", content)
+                    content = re.sub(r" \.", ".", content)
+
         if found:
             logger.warning(
-                f"Sec{sec_num} ({sd_id}) BANNED WORDS DETECTED: {', '.join(found)}"
+                f"Sec{sec_num} ({sd_id}) BANNED WORDS REPLACED: {', '.join(found)}"
             )
         else:
             logger.info(f"Sec{sec_num} ({sd_id}) banned-word audit: CLEAN")
 
-        # Tone skew audit — warn if negative-coded words appear 4+ times together
+        # Tone skew audit
         skew_hits = []
         for word in TONE_SKEW:
             import re as _re
             pat = r"\b" + _re.escape(word)
-            hits = _re.findall(pat, lower)
+            hits = _re.findall(pat, content.lower())
             if hits:
                 skew_hits.append(f"'{word}' ×{len(hits)}")
         if len(skew_hits) >= 4:
@@ -3324,12 +4192,12 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
                 f"{', '.join(skew_hits)}"
             )
 
-        return content  # always return unchanged
+        return content
 
     def _audit_past_dates(self, content: str, sec_num: int) -> str:
         """
-        For the questions section only: scan for past-year citations and log them.
-        Does NOT modify content — logs violations so you can see if the LLM ignored the date rule.
+        For the questions section only: scan for past-year citations and correct them.
+        Replaces past year references with current/future equivalents.
         """
         today = datetime.now(timezone.utc)
         current_year = today.year
@@ -3342,15 +4210,446 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
         year_mentions = re.findall(r'\b(20\d{2})\b', content)
         past_years = [y for y in year_mentions if int(y) < current_year]
 
-        if past_years:
-            unique_past = sorted(set(past_years))
-            logger.error(
-                f"PAST DATE VIOLATION in questions section: "
-                f"Past years cited: {unique_past}. "
-                f"Today is {today.strftime('%Y-%m-%d')}. "
-                f"These dates should not appear in answers."
-            )
-        else:
-            logger.info(f"Questions date audit: CLEAN — no past years found.")
+        if not past_years:
+            logger.info("Questions date audit: CLEAN — no past years found.")
+            return content
+
+        unique_past = sorted(set(past_years))
+        logger.warning(
+            f"PAST DATE VIOLATION in questions section: "
+            f"Past years cited: {unique_past}. Correcting..."
+        )
+
+        # Replace past year references with current year
+        for past_year in unique_past:
+            past_int = int(past_year)
+            offset = current_year - past_int
+            replacement_year = str(current_year + max(0, offset - 1))
+            content = re.sub(rf'\b{past_year}\b', replacement_year, content)
+            logger.info(f"  Replaced year {past_year} → {replacement_year}")
+
+        # Fix "Month Year" patterns where month in current year is already past
+        months = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December"]
+        current_month = today.month
+        for m_idx, month_name in enumerate(months, 1):
+            pattern = rf'\b({month_name})\s+({current_year})\b'
+            for match in re.finditer(pattern, content):
+                if m_idx < current_month:
+                    content = content.replace(
+                        match.group(0),
+                        f"{month_name} {current_year + 1}"
+                    )
+                    logger.info(f"  Shifted past month: {match.group(0)} → {month_name} {current_year + 1}")
 
         return content
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Burmese Translation Layer
+    # ─────────────────────────────────────────────────────────────────────────
+
+    _BURMESE_GLOSSARY: Optional[dict] = None
+
+    @classmethod
+    def _load_burmese_glossary(cls) -> dict:
+        """Load Burmese astrology glossary, cached after first load."""
+        if cls._BURMESE_GLOSSARY is not None:
+            return cls._BURMESE_GLOSSARY
+        import os
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "data", "burmese_glossary.json")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cls._BURMESE_GLOSSARY = json.load(f)
+                return cls._BURMESE_GLOSSARY
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.warning(f"Burmese glossary unavailable: {e}")
+            return {}
+
+    def _translate_section(self, content: str, glossary: dict,
+                           section_type: str = "") -> str:
+        """Translate one English report section to Burmese via LLM."""
+        glossary_compact = json.dumps(glossary, ensure_ascii=False, indent=1)
+
+        sys_prompt = (
+            "You are an expert translator specializing in astrology (ဗေဒင်) texts. "
+            "Translate the following English astrological report section into natural, "
+            "fluent Burmese (Myanmar Unicode / ယူနီကုဒ်).\n\n"
+            "RULES:\n"
+            "1. Use the GLOSSARY below for all astrological terms — do not invent translations.\n"
+            "2. Preserve ALL [bracketed citations] VERBATIM in English — do not translate inside [].\n"
+            "3. Preserve all dates in YYYY-MM-DD format exactly as written.\n"
+            "4. Preserve all markdown formatting: # headers, **bold**, *italic*, ---, bullet points.\n"
+            "5. Use Myanmar numerals (၁၂၃၄၅၆၇၈၉) for general numbers but keep Arabic numerals "
+            "in dates (2027-03-14) and degrees (23° 42').\n"
+            "6. Write in a warm, authoritative advisory tone — not academic, not casual.\n"
+            "7. Burmese astrology readers are familiar with both Baydin and Hindu-derived terms.\n"
+            "8. Do NOT add content, commentary, or explanations. Translate only.\n\n"
+            f"GLOSSARY:\n{glossary_compact}"
+        )
+
+        # Estimate output tokens — Burmese Unicode is ~1.3-1.5x more tokens than English
+        est_output_tokens = max(2000, int(len(content) / 3 * 1.5))
+
+        response = gateway.generate(
+            system_prompt=sys_prompt,
+            user_prompt=f"Translate this section to Burmese:\n\n{content}",
+            model=settings.translation_model,
+            max_tokens=est_output_tokens,
+            temperature=0.3,
+            reasoning_effort="low",
+        )
+
+        if response.get("success"):
+            return response["content"]
+        else:
+            logger.error(f"Translation failed for section ({section_type}): {response.get('error')}")
+            return content  # Fallback: return English
+
+    @staticmethod
+    def _translate_header(header: str, glossary: dict) -> str:
+        """Translate report header using programmatic replacement (no LLM call)."""
+        structural = glossary.get("structural", {})
+        translated = header
+
+        # Title
+        translated = translated.replace(
+            "# THE CELESTIAL DOSSIER",
+            f"# {structural.get('THE CELESTIAL DOSSIER', 'THE CELESTIAL DOSSIER')}"
+        )
+
+        # Metadata labels
+        label_map = {
+            "**Prepared:**": f"**{structural.get('Prepared', 'Prepared')}:**",
+            "**Birth:**": f"**{structural.get('Birth', 'Birth')}:**",
+            "**Systems:**": f"**{structural.get('Systems', 'Systems')}:**",
+            "**Methods:**": f"**{structural.get('Methods', 'Methods')}:**",
+        }
+        for eng, bur in label_map.items():
+            translated = translated.replace(eng, bur)
+
+        # System names
+        system_map = {
+            "Western Tropical": structural.get("Western Tropical", "Western Tropical"),
+            "Vedic Sidereal": structural.get("Vedic Sidereal", "Vedic Sidereal"),
+            "Saju (Bazi)": structural.get("Saju (Bazi)", "Saju (Bazi)"),
+            "Hellenistic": structural.get("Hellenistic", "Hellenistic"),
+        }
+        for eng, bur in system_map.items():
+            translated = translated.replace(eng, bur)
+
+        # Footer note
+        translated = translated.replace(
+            "This dossier synthesises four independent astrological traditions "
+            "into a single coherent portrait.",
+            "ဤအစီရင်ခံစာသည် လွတ်လပ်သော ဗေဒင်အစဉ်အလာ လေးခုကို "
+            "တစ်ခုတည်းသော ပုံတူတစ်ခုအဖြစ် ပေါင်းစပ်ထားပါသည်။"
+        )
+        translated = translated.replace(
+            "Where systems agree, confidence is high. "
+            "Where they diverge, both signals are named and weighted.",
+            "စနစ်များ သဘောတူညီပါက ယုံကြည်မှုမြင့်မားပါသည်။ "
+            "ကွဲလွဲပါက အချက်နှစ်ခုစလုံးကို အလေးချိန်ဖြင့် ဖော်ပြပါသည်။"
+        )
+
+        return translated
+
+    @staticmethod
+    def _get_burmese_part_labels(glossary: dict) -> dict:
+        """Return Burmese part divider labels."""
+        structural = glossary.get("structural", {})
+        return {
+            "I":   f"\n\n---\n\n# {structural.get('PART I: THE NATIVITY', 'PART I: THE NATIVITY')}\n\n---\n\n",
+            "II":  f"\n\n---\n\n# {structural.get('PART II: THE FIFTEEN-YEAR ALMANAC', 'PART II: THE FIFTEEN-YEAR ALMANAC')}\n\n---\n\n",
+            "III": f"\n\n---\n\n# {structural.get('PART III: THE DIRECTIVE', 'PART III: THE DIRECTIVE')}\n\n---\n\n",
+            "IV":  f"\n\n---\n\n# {structural.get('PART IV: YOUR QUESTIONS', 'PART IV: YOUR QUESTIONS')}\n\n---\n\n",
+        }
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Per-Question QA Pipeline Integration (Audit 5A/5B/5C)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _load_domain_knowledge() -> dict:
+        """Load curated domain knowledge from data/domain_knowledge.json."""
+        import os
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "data", "domain_knowledge.json")
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.warning(f"Domain knowledge unavailable: {e}")
+            return {}
+
+    @staticmethod
+    def _match_domain_context(question: str, domain_kb: dict) -> str:
+        """Match a question to relevant domain knowledge entries."""
+        if not domain_kb:
+            return ""
+        q_lower = question.lower()
+        matched = []
+
+        # Theme keywords → domain key prefixes
+        theme_map = {
+            "career": ["career:", "wealth:business"],
+            "job": ["career:"],
+            "doctor": ["career:doctor"],
+            "gp": ["career:doctor"],
+            "money": ["wealth:"],
+            "wealth": ["wealth:"],
+            "rich": ["wealth:"],
+            "property": ["wealth:property"],
+            "house": ["wealth:property"],
+            "invest": ["wealth:investment"],
+            "marriage": ["relationship:marriage"],
+            "partner": ["relationship:marriage"],
+            "relationship": ["relationship:"],
+            "child": ["relationship:children"],
+            "baby": ["relationship:children"],
+            "health": ["health:"],
+            "mental": ["health:mental"],
+            "spiritual": ["spiritual:"],
+            "meditat": ["spiritual:buddhist"],
+            "buddhis": ["spiritual:buddhist"],
+            "relocat": ["relocation:"],
+            "move": ["relocation:"],
+            "timing": ["timing:"],
+            "when": ["timing:"],
+        }
+
+        matching_prefixes = set()
+        for keyword, prefixes in theme_map.items():
+            if keyword in q_lower:
+                matching_prefixes.update(prefixes)
+
+        # UK-specific if question mentions UK context or user is UK-based
+        uk_relevant = "uk" in q_lower or "england" in q_lower or "nhs" in q_lower
+
+        for key, entry in domain_kb.items():
+            for prefix in matching_prefixes:
+                if key.startswith(prefix):
+                    # Prefer UK-specific entries when relevant
+                    if uk_relevant and ":UK" in key:
+                        matched.insert(0, f"[{key}] {json.dumps(entry)}")
+                    elif ":general" in key or (uk_relevant and ":UK" in key):
+                        matched.append(f"[{key}] {json.dumps(entry)}")
+                    elif not any(f":{country}" in key for country in ["UK", "US", "IN"]):
+                        matched.append(f"[{key}] {json.dumps(entry)}")
+
+        # Always include general entries for matched themes
+        if not uk_relevant:
+            for key, entry in domain_kb.items():
+                if ":general" in key and any(key.startswith(p) for p in matching_prefixes):
+                    line = f"[{key}] {json.dumps(entry)}"
+                    if line not in matched:
+                        matched.append(line)
+
+        return "\n".join(matched[:5])  # Cap at 5 entries to avoid token bloat
+
+    def _generate_questions_via_pipeline(
+        self,
+        questions: list,
+        chart_data: dict,
+        ref: dict,
+        temporal_clusters: list,
+        citation_registry: dict,
+        verdict_ledger_block: str = "",
+    ) -> str:
+        """Generate Q&A section using the per-question REASON→VERIFY→NARRATE pipeline."""
+        today = datetime.now(timezone.utc)
+        router = QuestionRouter(today)
+        domain_kb = self._load_domain_knowledge()
+
+        # Build per-question evidence blocks and domain contexts
+        evidence_blocks = {}
+        domain_contexts = {}
+        for i, q in enumerate(questions):
+            evidence_blocks[i] = router.build_evidence_block(
+                question=q,
+                chart_data=chart_data,
+                temporal_clusters=temporal_clusters,
+                ref=ref,
+                question_num=i + 1,
+            )
+            domain_contexts[i] = self._match_domain_context(q, domain_kb)
+
+        # Build arbiter context for the pipeline (verdict ledger + section memory)
+        arbiter_context = ""
+        if verdict_ledger_block:
+            arbiter_context += verdict_ledger_block + "\n\n"
+        if self._section_memory:
+            arbiter_context += self._format_section_memory()
+
+        # Run the pipeline (pass house_lords for claim verification)
+        house_lords = chart_data.get("house_lords", {})
+        pipeline = QAPipeline(ref=ref, citation_registry=citation_registry,
+                              house_lords=house_lords)
+        content = pipeline.answer_all(
+            questions=questions,
+            evidence_blocks=evidence_blocks,
+            domain_contexts=domain_contexts,
+            arbiter_context=arbiter_context,
+        )
+
+        return content
+
+    def _build_citation_registry(self, chart_data: dict, ref: dict, temporal_clusters: list) -> dict:
+        """Build flat registry of verifiable astrological facts for citation validation."""
+        registry = {}
+
+        # Planet positions from ref dict
+        for planet, data in ref.items():
+            if isinstance(data, dict) and data.get("sign"):
+                dms = data.get("dms", _deg_to_dms(data.get("degree", 0)))
+                registry[planet] = f"{dms}' {data['sign']}"
+
+        # Transit dates from western predictive data
+        w_pred = chart_data.get("western", {}).get("predictive", {})
+        outer = w_pred.get("outer_transit_aspects", {})
+        for hit in outer.get("hits") or outer.get("all_hits", []):
+            transiting = hit.get("transiting", "?")
+            natal_pt = hit.get("natal_point", "?")
+            aspect = hit.get("aspect", "?")
+            exact = hit.get("exact_date_iso", hit.get("exact_date", ""))
+            entry = hit.get("entry_date", "")
+            exit_d = hit.get("exit_date", "")
+            key = f"{transiting}_{aspect}_{natal_pt}"
+            registry[key] = f"exact {exact}, entry {entry}, exit {exit_d}"
+
+        # Dasha info
+        v_pred = chart_data.get("vedic", {}).get("predictive", {})
+        dasha = v_pred.get("vimshottari", {})
+        if dasha:
+            registry["Maha_Dasha"] = f"{dasha.get('maha_lord', '?')} ({dasha.get('approx_remaining_years', '?')}yr remaining)"
+            registry["Antar_Dasha"] = f"{dasha.get('antar_lord', '?')}"
+
+        # Shadbala scores
+        strength = chart_data.get("vedic", {}).get("strength", {})
+        shadbala = strength.get("shadbala", {})
+        if isinstance(shadbala, dict):
+            for planet, sb_data in shadbala.items():
+                if isinstance(sb_data, dict):
+                    rupas = sb_data.get("total_rupas", sb_data.get("rupas", 0))
+                    tier = sb_data.get("tier", "")
+                    registry[f"Shadbala_{planet}"] = f"{rupas:.2f} Rupas ({tier})"
+
+        # Storm window dates from temporal clusters
+        if temporal_clusters:
+            for i, c in enumerate(temporal_clusters[:15]):
+                start = c.get("start_date", c.get("start", "?"))
+                end = c.get("end_date", c.get("end", "?"))
+                score = c.get("convergence_score", 0)
+                label = c.get("confidence_label", "?")
+                registry[f"storm_window_{i+1}"] = f"{start}\u2013{end} score={score:.2f} {label}"
+
+        return registry
+
+    def _validate_citations(self, content: str, citation_registry: dict) -> str:
+        """Validate [bracketed citations] in generated text against the citation registry.
+
+        Checks degree claims and date claims. Logs mismatches.
+        Does not strip content \u2014 only logs warnings for now.
+        """
+        import re
+
+        # Find all bracketed citations
+        citations = re.findall(r'\[([^\]]+)\]', content)
+        if not citations:
+            return content
+
+        validated = 0
+        warnings = 0
+
+        for citation in citations:
+            # Check degree claims: "Sun at 23\u00b0 42' Cancer" or "Jupiter 14\u00b055' Sag"
+            deg_match = re.search(r'(\w+)\s+(?:at\s+)?(\d{1,2})\u00b0\s*(\d{2})\'?\s*(\w+)', citation)
+            if deg_match:
+                planet = deg_match.group(1)
+                claimed_deg = int(deg_match.group(2))
+                claimed_sign = deg_match.group(4)
+                ref_val = citation_registry.get(planet, "")
+                if ref_val and claimed_sign in ref_val:
+                    validated += 1
+                elif ref_val:
+                    logger.warning(f"CITATION MISMATCH: [{citation}] \u2014 registry has {planet}={ref_val}")
+                    warnings += 1
+                continue
+
+            # Check date claims: "exact 2027-03-14" or "entry 2027-01-22"
+            date_match = re.search(r'(?:exact|entry|exit)\s+(\d{4}-\d{2}-\d{2})', citation)
+            if date_match:
+                claimed_date = date_match.group(1)
+                # Search registry for this date
+                found = any(claimed_date in v for v in citation_registry.values())
+                if found:
+                    validated += 1
+                else:
+                    logger.warning(f"CITATION DATE NOT IN REGISTRY: [{citation}] \u2014 date {claimed_date} not found")
+                    warnings += 1
+
+        if validated or warnings:
+            logger.info(f"Citation audit: {validated} validated, {warnings} warnings out of {len(citations)} citations")
+
+        return content
+
+    def _validate_consensus_claims(self, content: str, expert_analyses: list) -> str:
+        """Validate claims like 'all four systems agree' against actual expert outputs.
+
+        Checks that claimed agreeing systems actually mention the relevant theme.
+        Logs corrections but does not modify content (informational audit).
+        """
+        import re
+
+        if not expert_analyses:
+            return content
+
+        # Build system text lookup
+        system_texts = {}
+        for ea in expert_analyses:
+            sys_name = ea.get("system", "").lower()
+            text = ea.get("analysis", "").lower()
+            if sys_name and text:
+                system_texts[sys_name] = text
+
+        # Find consensus claims
+        consensus_patterns = [
+            (r'all\s+four\s+systems\s+(?:agree|converge|point|confirm)', 4),
+            (r'(?:four|4)\s+(?:independent\s+)?systems\s+(?:agree|converge)', 4),
+            (r'(?:three|3)\s+(?:independent\s+)?systems\s+(?:agree|converge|point)', 3),
+            (r'(\d+)\s+systems\s+(?:agree|converge|point)', None),  # dynamic count
+        ]
+
+        for pattern, expected_count in consensus_patterns:
+            matches = list(re.finditer(pattern, content, re.IGNORECASE))
+            for match in matches:
+                if expected_count is None:
+                    expected_count = int(match.group(1))
+
+                # Get surrounding context (200 chars) to find theme
+                start = max(0, match.start() - 100)
+                end = min(len(content), match.end() + 200)
+                context = content[start:end].lower()
+
+                # Extract theme keywords from context
+                theme_words = re.findall(r'\b(career|wealth|health|relationship|marriage|home|property|children|spiritual|identity|crisis|opportunity|transformation)\b', context)
+
+                if not theme_words:
+                    continue
+
+                # Check how many systems actually mention these themes
+                confirming_systems = []
+                for sys_name, sys_text in system_texts.items():
+                    if any(tw in sys_text for tw in theme_words):
+                        confirming_systems.append(sys_name)
+
+                actual_count = len(confirming_systems)
+                if actual_count < expected_count:
+                    logger.warning(
+                        f"CONSENSUS OVERCLAIM: '{match.group(0)}' near themes {theme_words} \u2014 "
+                        f"only {actual_count} systems ({confirming_systems}) mention these themes, "
+                        f"not {expected_count}"
+                    )
+
+        return content
+

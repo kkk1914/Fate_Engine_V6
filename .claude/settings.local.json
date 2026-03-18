@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /Users/kyawkoko/PycharmProjects/Fate_Engine_V6/systems/*.py)",
+      "Bash(ls -la /Users/kyawkoko/PycharmProjects/Fate_Engine_V6/synthesis/*.py)",
+      "Read(//Users/kyawkoko/PycharmProjects/Fate_Engine_V6/**)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(ls -la /Users/kyawkoko/PycharmProjects/Fate_Engine_V6/graph/*.py)",
+      "Bash(find /Users/kyawkoko/PycharmProjects/Fate_Engine_V6/reports -type f -name *master_report*)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\(''/Users/kyawkoko/PycharmProjects/Fate_Engine_V6/synthesis/qa_pipeline.py''\\).read\\(\\)\\); print\\(''qa_pipeline.py: valid Python''\\)\")",
+      "Bash(python3 -c \"import json; data = json.load\\(open\\(''/Users/kyawkoko/PycharmProjects/Fate_Engine_V6/data/domain_knowledge.json''\\)\\); print\\(f''domain_knowledge.json: valid JSON, {len\\(data\\)} top-level keys''\\); print\\(''Keys:'', list\\(data.keys\\(\\)\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''synthesis/archon.py''\\).read\\(\\)\\); print\\(''archon.py: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''synthesis/qa_pipeline.py''\\).read\\(\\)\\); print\\(''qa_pipeline.py: OK''\\)\")"
+    ]
+  }
+}

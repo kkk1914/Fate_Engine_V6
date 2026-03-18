@@ -81,9 +81,22 @@ ASPECTS: List[Tuple[float, str]] = [
 ]
 
 ORB_ENTER = 3.0   # degrees — start tracking
-ORB_EXACT = 1.0   # degrees — report as a "hit"
+ORB_EXACT = 1.0   # degrees — default report threshold (overridden per planet below)
 ORB_LEAVE = 3.5   # slightly wider than enter to avoid jitter at boundary
 STEP_DAYS = 1.0   # daily scan step
+
+# Per-planet hit orbs: slower planets get wider orbs (standard professional practice)
+ORB_EXACT_BY_PLANET: Dict[str, float] = {
+    "Jupiter": 1.5,
+    "Saturn":  1.5,
+    "Uranus":  1.2,
+    "Neptune": 1.2,
+    "Pluto":   1.2,
+}
+
+
+def _orb_exact_for(planet_name: str) -> float:
+    return ORB_EXACT_BY_PLANET.get(planet_name, ORB_EXACT)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -158,6 +171,7 @@ def _scan_pair(pname: str, pcode: int,
     from start_jd to end_jd. Returns all exact hits.
     """
     hits: List[Dict] = []
+    orb_exact = _orb_exact_for(pname)  # Per-planet hit threshold
 
     # pending[aspect_name] = dict with window state
     pending: Dict[str, Optional[Dict]] = {a: None for _, a in ASPECTS}
@@ -186,7 +200,7 @@ def _scan_pair(pname: str, pcode: int,
 
             elif p is not None:
                 # Window just closed
-                if p["min_orb"] <= ORB_EXACT:
+                if p["min_orb"] <= orb_exact:
                     # Refine exact date
                     lo = max(start_jd, p["entry_jd"] - 3.0)
                     hi = min(end_jd,   p["last_jd"]  + 3.0)
@@ -194,7 +208,7 @@ def _scan_pair(pname: str, pcode: int,
                     exact_lon = _planet_lon(exact_jd, pcode)
                     exact_orb = _aspect_orb(exact_lon, nlon, target)
 
-                    if exact_orb <= ORB_EXACT:
+                    if exact_orb <= orb_exact:
                         hits.append({
                             "transiting":  pname,
                             "natal_point": npoint,
@@ -215,13 +229,13 @@ def _scan_pair(pname: str, pcode: int,
     # Close any windows still open at end of scan (ongoing transit)
     for target, aname in ASPECTS:
         p = pending[aname]
-        if p and p["min_orb"] <= ORB_EXACT:
+        if p and p["min_orb"] <= orb_exact:
             lo = max(start_jd, p["entry_jd"] - 3.0)
             hi = min(end_jd,   p["last_jd"]  + 3.0)
             exact_jd  = _find_exact_jd(pcode, nlon, target, lo, hi)
             exact_lon = _planet_lon(exact_jd, pcode)
             exact_orb = _aspect_orb(exact_lon, nlon, target)
-            if exact_orb <= ORB_EXACT:
+            if exact_orb <= orb_exact:
                 hits.append({
                     "transiting":  pname,
                     "natal_point": npoint,
@@ -237,6 +251,76 @@ def _scan_pair(pname: str, pcode: int,
                 })
 
     return hits
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Retrograde series merger
+# ─────────────────────────────────────────────────────────────────────────────
+
+_RETRO_MERGE_DAYS = 180  # hits within 6 months = same retrograde series
+
+
+def _merge_retrograde_series(hits: List[Dict]) -> List[Dict]:
+    """
+    Merge consecutive hits for the same planet–aspect–natal point that fall
+    within _RETRO_MERGE_DAYS of each other into a single combined hit.
+
+    Retrograde outer-planet transits produce 2-3 exact passes (direct, Rx,
+    direct again). These are astrologically ONE event with three peaks.
+    The temporal aligner should see one event spanning the full window, not
+    2-3 separate events that inflate convergence scores.
+
+    The merged hit keeps:
+      - entry_date  = earliest entry
+      - exit_date   = latest exit
+      - exact_date  = date of tightest orb among passes
+      - exact_dates = list of all individual exact dates (for narrative)
+    """
+    if not hits:
+        return hits
+
+    # Group by (transiting, natal_point, aspect)
+    groups: Dict[tuple, List[Dict]] = {}
+    for h in hits:
+        key = (h["transiting"], h["natal_point"], h["aspect"])
+        groups.setdefault(key, []).append(h)
+
+    merged: List[Dict] = []
+    for key, group in groups.items():
+        # Sort by _exact_jd (if still present) or exact_date
+        group.sort(key=lambda h: h.get("_exact_jd", 0))
+
+        current_series = [group[0]]
+        for h in group[1:]:
+            prev = current_series[-1]
+            gap = h.get("_exact_jd", 0) - prev.get("_exact_jd", 0)
+            if gap <= _RETRO_MERGE_DAYS:
+                current_series.append(h)
+            else:
+                merged.append(_combine_series(current_series))
+                current_series = [h]
+        merged.append(_combine_series(current_series))
+
+    merged.sort(key=lambda h: h.get("_exact_jd", 0))
+    return merged
+
+
+def _combine_series(series: List[Dict]) -> Dict:
+    """Combine a list of retrograde-pass hits into one merged hit."""
+    if len(series) == 1:
+        return series[0]
+
+    # Find the tightest pass
+    best = min(series, key=lambda h: h.get("orb_at_exact", 999))
+
+    exact_dates = [h["exact_date"] for h in series]
+    return {
+        **best,
+        "entry_date":  series[0]["entry_date"],
+        "exit_date":   series[-1]["exit_date"],
+        "exact_dates": exact_dates,  # all individual passes
+        "retrograde_passes": len(series),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -279,6 +363,9 @@ def build_outer_transits_for_archon(natal_jd: float,
     # Sort by exact date
     all_hits.sort(key=lambda h: h.get("_exact_jd", 0))
 
+    # Merge retrograde multi-pass hits into single events
+    all_hits = _merge_retrograde_series(all_hits)
+
     # Strip internal sort key
     for h in all_hits:
         h.pop("_exact_jd", None)
@@ -308,17 +395,21 @@ def _build_summary(hits: List[Dict]) -> str:
         "Format: exact_date | planet aspect natal_point | window",
         "",
     ]
+    SLOW_PLANETS = {"Pluto", "Neptune", "Uranus"}
     current_year = None
     for h in hits:
         yr = h["year"]
         if yr != current_year:
             lines.append(f"── {yr} ──────────────")
             current_year = yr
-        lines.append(
+        hit_line = (
             f"  {h['exact_date']}: {h['transiting']} {h['aspect']} "
             f"natal {h['natal_point']}  "
             f"[in:{h['entry_date']} out:{h['exit_date']}]  orb={h['orb_at_exact']}°"
         )
+        if h.get("transiting", "") in SLOW_PLANETS:
+            hit_line += f"  ⚠️ SLOW TRANSIT — active {h['entry_date']} to {h['exit_date']} (gradual process, NOT acute event)"
+        lines.append(hit_line)
 
     lines.append("\n=== END TRANSIT ASPECTS ===")
     return "\n".join(lines)

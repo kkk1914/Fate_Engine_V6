@@ -1,7 +1,7 @@
 """Configuration management for Fates Engine."""
 from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
-from typing import Optional
+from typing import Optional, List
 import os
 import warnings
 
@@ -21,17 +21,39 @@ class Settings(BaseSettings):
     default_reasoning_effort: str = "medium"
 
     # Model Assignments
-    # COST: ~$0.35/run vs $0.74 with gpt-5.2 (53% cheaper)
-    # Experts  @ gemini-2.5-flash-lite : $0.10/$0.40 per 1M tokens
-    # Arbiter  @ gemini-3-flash-preview : $0.50/$3.00 per 1M tokens
-    # Archon   @ gemini-2.5-pro         : $1.25/$10.00 per 1M tokens
-    # NOTE: Switch archon_model to "gemini-3.1-pro-preview" when stable (Q2 2026)
-    western_expert_model:     str = "gemini-2.5-flash-lite"
-    vedic_expert_model:       str = "gemini-2.5-flash-lite"
-    saju_expert_model:        str = "gemini-2.5-flash-lite"
-    hellenistic_expert_model: str = "gemini-2.5-flash-lite"
+    # Experts  @ gemini-2.5-flash        : $0.15/$0.60 per 1M tokens (thinking enabled)
+    # Arbiter  @ gemini-3-flash-preview   : $0.50/$3.00 per 1M tokens
+    # Archon   @ gemini-2.5-pro           : $1.25/$10.00 per 1M tokens
+    # NOTE: flash-lite silently ignores reasoning_effort — experts MUST use 2.5-flash+
+    western_expert_model:     str = "gemini-2.5-flash"
+    vedic_expert_model:       str = "gemini-2.5-flash"
+    saju_expert_model:        str = "gemini-2.5-flash"
+    hellenistic_expert_model: str = "gemini-2.5-flash"
     arbiter_model:            str = "gemini-3-flash-preview"
     archon_model:             str = "gemini-2.5-pro"
+    translation_model:        str = "gemini-2.5-flash"
+
+    # Multi-Model Ensemble (2 calls + judge per expert — higher quality, 3x cost)
+    # Default False: exemplars + graph rules + prediction engine already eliminate
+    # the variance the ensemble was designed to solve. Set True for A/B testing.
+    ensemble_mode: bool = False
+
+    # Report Language ("en" = English, "my" = Burmese/Myanmar)
+    report_language: str = "en"
+
+    # Report Parts to generate (I=Nativity, II=Almanac, III=Directive, IV=Questions)
+    # Generate all by default. Set to subset like ["I", "IV"] for targeted reports.
+    # Pipeline quality is NOT affected — all chart computations still run regardless.
+    include_parts: List[str] = ["I", "II", "III", "IV"]
+
+    # Include PART III: THE DIRECTIVE (sections 12-13: Fifteen-Year Directive + Warning)
+    # Set False to skip — saves 2 Archon LLM calls (~8000 tokens @ gemini-2.5-pro)
+    # Legacy alias — if False AND "III" is in include_parts, "III" is removed.
+    include_directive: bool = False
+
+    # Ayanamsa (sidereal mode for Vedic calculations)
+    # Options: lahiri, raman, krishnamurti, de_luce, yukteswar
+    ayanamsa: str = "lahiri"
 
     # Ephemeris Path
     ephe_path: str = "./ephe"

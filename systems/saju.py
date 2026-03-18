@@ -7,10 +7,9 @@ from typing import Dict, Any, List, Optional, Tuple
 # Bazi (Saju) Helpers
 # -----------------------------
 try:
-    from lunar_python import Solar, EightChar  # Add EightChar to import
+    from lunar_python import Solar
 except Exception as e:
     Solar = None
-    EightChar = None  # Add this line
 
 STEMS = ["甲","乙","丙","丁","戊","己","庚","辛","壬","癸"]
 BRANCHES = ["子","丑","寅","卯","辰","巳","午","未","申","酉","戌","亥"]
@@ -320,8 +319,13 @@ def sexagenary_step(stem: str, branch: str, step: int) -> Tuple[str,str]:
 
 def sun_lon_tropical(jd: float) -> float:
     import swisseph as swe
-    pos, _ = swe.calc_ut(jd, swe.SUN, 0)
-    return float(pos[0])
+    result = swe.calc_ut(jd, swe.SUN, 0)
+    # Handle both pyswisseph return formats:
+    # v2.10+: (tuple_of_6, retflag)  — result[0] is a tuple
+    # older:  flat tuple of 6 floats — result[0] is a float
+    if isinstance(result[0], (list, tuple)):
+        return float(result[0][0])
+    return float(result[0])
 
 def next_jieqi_days(birth_jd: float, forward: bool = True) -> float:
     """
@@ -589,7 +593,7 @@ def calculate_bazi(birth_dt_utc: datetime, time_known: bool, gender: str, birth_
 
     lon: geographic longitude of birth (+E / -W). Used to derive LMT offset.
     """
-    if Solar is None or EightChar is None:
+    if Solar is None:
         raise ImportError("lunar_python not installed. pip install lunar-python")
 
     # ── Convert UTC → Local True Solar Time (LTST) ───────────────────────────
@@ -613,8 +617,8 @@ def calculate_bazi(birth_dt_utc: datetime, time_known: bool, gender: str, birth_
             birth_dt_utc.hour + birth_dt_utc.minute / 60.0 + birth_dt_utc.second / 3600.0
         )
         # Apparent Sun Right Ascension (degrees)
-        sun_eq, _ = _swe.calc_ut(jd_birth, _swe.SUN, _swe.FLG_EQUATORIAL)
-        sun_ra = float(sun_eq[0])
+        _eq_result = _swe.calc_ut(jd_birth, _swe.SUN, _swe.FLG_EQUATORIAL)
+        sun_ra = float(_eq_result[0][0] if isinstance(_eq_result[0], (list, tuple)) else _eq_result[0])
         # Mean Sun longitude (degrees, J2000 epoch)
         T = (jd_birth - 2451545.0) / 36525.0
         mean_lon = (280.46646 + 36000.76983 * T) % 360.0
@@ -634,20 +638,30 @@ def calculate_bazi(birth_dt_utc: datetime, time_known: bool, gender: str, birth_
         birth_dt_lmt.hour, birth_dt_lmt.minute, 0
     )
 
-    # Try both APIs for compatibility
+    # Try EightChar API first, fallback to Lunar direct methods
+    lunar = solar.getLunar()
     try:
-        eight = solar.getLunar().getEightChar()
+        eight = lunar.getEightChar()
     except AttributeError:
-        # Fallback to direct EightChar instantiation
-        eight = EightChar(solar.getLunar())
+        eight = None
 
-    raw = {
-        "Year": {"stem": eight.getYearGan(), "branch": eight.getYearZhi()},
-        "Month": {"stem": eight.getMonthGan(), "branch": eight.getMonthZhi()},
-        "Day": {"stem": eight.getDayGan(), "branch": eight.getDayZhi()},
-    }
-    if time_known:
-        raw["Hour"] = {"stem": eight.getTimeGan(), "branch": eight.getTimeZhi()}
+    if eight is not None:
+        raw = {
+            "Year": {"stem": eight.getYearGan(), "branch": eight.getYearZhi()},
+            "Month": {"stem": eight.getMonthGan(), "branch": eight.getMonthZhi()},
+            "Day": {"stem": eight.getDayGan(), "branch": eight.getDayZhi()},
+        }
+        if time_known:
+            raw["Hour"] = {"stem": eight.getTimeGan(), "branch": eight.getTimeZhi()}
+    else:
+        # Direct Lunar methods (works on all lunar_python versions)
+        raw = {
+            "Year": {"stem": lunar.getYearGan(), "branch": lunar.getYearZhi()},
+            "Month": {"stem": lunar.getMonthGan(), "branch": lunar.getMonthZhi()},
+            "Day": {"stem": lunar.getDayGan(), "branch": lunar.getDayZhi()},
+        }
+        if time_known:
+            raw["Hour"] = {"stem": lunar.getTimeGan(), "branch": lunar.getTimeZhi()}
 
     voids = void_emptiness(raw["Day"]["stem"], raw["Day"]["branch"])
     # annotate pillars
@@ -684,12 +698,19 @@ def calculate_bazi(birth_dt_utc: datetime, time_known: bool, gender: str, birth_
         target_now = now + timedelta(days=365.25 * y_offset)
         solar_now = Solar.fromYmdHms(target_now.year, target_now.month, target_now.day, target_now.hour,
                                      target_now.minute, 0)
-        eight_now = solar_now.getLunar().getEightChar()
+        lunar_now = solar_now.getLunar()
+        try:
+            eight_now = lunar_now.getEightChar()
+            y_gan = eight_now.getYearGan()
+            y_zhi = eight_now.getYearZhi()
+        except AttributeError:
+            y_gan = lunar_now.getYearGan()
+            y_zhi = lunar_now.getYearZhi()
 
         liu_nian_timeline.append({
             "year": target_now.year,
-            "stem": eight_now.getYearGan(),
-            "branch": eight_now.getYearZhi()
+            "stem": y_gan,
+            "branch": y_zhi
         })
 
     # Assemble ten_gods summary dict for saju_expert and archon.

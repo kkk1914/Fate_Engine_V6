@@ -1,0 +1,63 @@
+{
+  "career:doctor:UK": {
+    "salary_range": "NHS GP partner: GBP 100K-150K/yr; salaried GP: GBP 65K-90K; locum: GBP 80-120/hr",
+    "wealth_paths": ["private practice", "medico-legal reports (GBP 500-2000 each)", "property portfolio", "health-tech startup", "medical education/consulting"],
+    "median_net_worth_age_50": "GBP 1.2M (BMA wealth survey)",
+    "key_constraints": "NHS pension scheme (significant asset), partnership buy-in capital, indemnity costs rising"
+  },
+  "career:doctor:general": {
+    "salary_range": "Varies by country; specialist earnings 2-5x primary care",
+    "wealth_paths": ["private practice", "medical consulting", "health-tech", "medical education", "portfolio career"],
+    "key_constraints": "Training duration limits early wealth accumulation; burnout risk high"
+  },
+  "wealth:property:UK": {
+    "avg_yield": "5-8% gross rental yield (regional variation)",
+    "entry_capital": "GBP 30K-60K deposit typical for BTL; stamp duty surcharge 3%",
+    "strategy": "Buy-to-let in university cities or commuter towns; HMO conversion for higher yield",
+    "timeline": "First property typically age 28-35 for professionals; portfolio of 3-5 by age 45"
+  },
+  "wealth:property:general": {
+    "principle": "Property as wealth vehicle requires leverage discipline and 10+ year horizon",
+    "strategy": "Primary residence first, then income-generating assets"
+  },
+  "wealth:investment:UK": {
+    "vehicles": "ISA (GBP 20K/yr tax-free), SIPP pension (40% tax relief), VCT/EIS for higher risk",
+    "returns": "UK equity market long-term average 7-8% nominal; bonds 3-4%",
+    "timeline": "ISA millionaire achievable in 20-25 years with consistent GBP 20K/yr contributions"
+  },
+  "wealth:business:general": {
+    "principle": "Entrepreneurial wealth requires 3-5 year runway and domain expertise",
+    "paths": ["productized service", "digital product/course", "consultancy scaling to agency", "franchise/licensing"]
+  },
+  "relationship:marriage:general": {
+    "context": "Chart timing for relationship formation typically involves Venus/7th house activation",
+    "practical": "Long-term partnership stability correlates with shared values more than chart compatibility"
+  },
+  "relationship:children:general": {
+    "context": "5th house activation + Jupiter transits traditionally indicate fertility windows",
+    "practical": "Medical fertility declines after 35; chart timing should be weighed against biological reality",
+    "note": "Astrology cannot predict child gender — this is a firm limitation"
+  },
+  "health:general": {
+    "context": "6th house and planetary dignities indicate constitutional tendencies, not diagnoses",
+    "practical": "Chart health indicators are tendencies, not medical advice. Always consult a doctor.",
+    "note": "Moon-related health: emotional regulation, sleep quality, digestive sensitivity"
+  },
+  "health:mental:general": {
+    "context": "Saturn-Moon aspects traditionally indicate tendency toward melancholy/depression",
+    "practical": "Mental health support should always be professional; chart indicators identify vulnerability windows"
+  },
+  "spiritual:buddhist": {
+    "practices": ["Vipassana meditation", "Metta (loving-kindness)", "Anapanasati (breath meditation)", "Dana (generosity practice)"],
+    "alignment": "Saturn periods suit disciplined Samatha practice; Jupiter periods suit Dhamma study and teaching",
+    "tradition": "Theravada framework: chart as kamma indicator, not fate determinant"
+  },
+  "relocation:UK": {
+    "context": "Astrocartography and local space charts can indicate favorable regions",
+    "practical_cities": "London (highest earning potential, highest cost); Manchester/Birmingham (growing medical hubs); Edinburgh (quality of life + medical excellence)"
+  },
+  "timing:general": {
+    "principle": "Multiple system convergence (3+) narrows timing to 1-3 month windows",
+    "limitation": "Single-system timing has ±6 month variance; treat as season, not date"
+  }
+}

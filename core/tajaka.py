@@ -2,6 +2,8 @@
 import swisseph as swe
 from datetime import datetime
 from typing import Dict, Any, List
+from core.ayanamsa import AyanamsaManager
+from config import settings
 
 
 
@@ -43,7 +45,7 @@ class TajakaEngine:
 
     def _get_natal_ascendant(self) -> float:
         """Get natal ascendant (sidereal)."""
-        swe.set_sid_mode(swe.SIDM_LAHIRI)
+        AyanamsaManager.set_ayanamsa(settings.ayanamsa)
         cusps, ascmc = swe.houses_ex(self.natal_jd, self.lat, self.lon, b'P',
                                      swe.FLG_SIDEREAL)
         return ascmc[0]

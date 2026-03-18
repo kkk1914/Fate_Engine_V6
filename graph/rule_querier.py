@@ -125,6 +125,64 @@ class GraphRuleQuerier:
             logger.debug(f"GraphRuleQuerier.get_chapter_rules skipped: {e}")
             return ""
 
+    # ── System-to-DB-system mapping for expert queries ─────────────────────
+    SYSTEM_DB_MAP = {
+        "Western":     "Western",
+        "Vedic":       "Vedic_engine",
+        "Saju":        "Saju",
+        "Hellenistic": "Western",  # Hellenistic rules stored under Western in graph
+    }
+
+    def get_expert_rules(self, system_name: str, chart_data: Dict[str, Any]) -> str:
+        """
+        Return a formatted rule block for injection into an expert's prompt.
+        Filters rules to only the relevant astrological system.
+        Returns empty string if Neo4j unavailable or no rules found.
+        """
+        if not self._available:
+            return ""
+
+        try:
+            keys = self._build_keys(chart_data)
+            if not keys:
+                return ""
+
+            # Filter keys to this expert's system
+            db_system = self.SYSTEM_DB_MAP.get(system_name, system_name)
+            system_keys = [k for k in keys if k.system == db_system]
+            if not system_keys:
+                return ""
+
+            hits = self._db_module.fetch_rules_for_keys(
+                system_keys,
+                chapters=None,  # all chapters
+                include_global=True
+            )
+
+            if not hits:
+                return ""
+
+            # Sort: CRITICAL placements first, then by confidence
+            critical, standard = [], []
+            for hit in hits:
+                is_critical = any(hit.placement.startswith(p) for p in CRITICAL_PLACEMENTS)
+                if is_critical:
+                    critical.append(hit)
+                else:
+                    standard.append(hit)
+
+            lines = [f"=== {system_name.upper()} GRAPH RULES (Neo4j — curated authority) ==="]
+            for hit in critical[:6]:
+                lines.append(f"[CRITICAL] {hit.placement} → {hit.sign}: {hit.meaning}")
+            for hit in standard[:8]:
+                lines.append(f"[{hit.placement} in {hit.sign}]: {hit.meaning}")
+            lines.append("=== END GRAPH RULES ===")
+            return "\n".join(lines)
+
+        except Exception as e:
+            logger.debug(f"get_expert_rules({system_name}) skipped: {e}")
+            return ""
+
     def _build_keys(self, chart_data: Dict[str, Any]) -> List:
         """Build RuleKey list from chart_data for the database query."""
         try:

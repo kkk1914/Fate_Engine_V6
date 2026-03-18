@@ -1,6 +1,9 @@
 """Hellenistic Expert."""
 from experts.gateway import gateway
 from config import settings
+from graph.rule_querier import get_rule_querier
+from experts.exemplars import select_exemplars
+from experts.ensemble import ensemble_generate
 
 class HellenisticExpert:
     """Expert in Ancient/Hellenistic astrology."""
@@ -22,8 +25,15 @@ class HellenisticExpert:
     - MUST interpret the Lot of Fortune AND the Lot of Spirit -- with signs, house positions, and their lords' conditions.
     - MUST reference Zodiacal Releasing -- and now MUST cite L2 sub-periods within the current L1 period:
       * State the current L1 sign and its duration.
-      * State the current L2 sub-period sign, start date, end date, and what it activates.
+      * State the current L2 sub-period sign, start date, end date, and its thematic emphasis.
       * If any L2 period coincides with a "Loosing of the Bond" (LOB), flag it explicitly -- these are the most critical windows.
+    IMPORTANT: Zodiacal Releasing defines THEMATIC CHAPTERS, not daily triggers.
+    An L1 period spanning years describes the broad theme of that life chapter.
+    An L2 sub-period describes a sub-theme lasting weeks to months.
+    NEVER describe ZR as "activating on [exact date]" or use trigger metaphors
+    like "a key turning in a lock" or "the mechanism fires on [date]".
+    Instead: "The ZR chapter of [sign] covers [month range], setting the
+    thematic context for [domain]."
     - MUST note if any Loosing of the Bond period occurs in the next 5 years (from Fortune or Spirit).
     - MUST identify the predominator (Epikratetor) and its practical meaning for this life.
 
@@ -39,13 +49,39 @@ class HellenisticExpert:
 
     def analyze(self, chart_data: dict, mode: str = "natal", user_questions: list = None) -> dict:
         prompt = self._question_prefix(user_questions) + self._build_prompt(chart_data, mode)
+        # Inject mandatory house lord reference (prevents hallucinated lords)
+        lord_ref = chart_data.get("_house_lord_reference_block", "")
+        if lord_ref:
+            prompt = lord_ref + "\n\n" + prompt
+        # Inject Neo4j graph rules if available
+        graph_rules = get_rule_querier().get_expert_rules("Hellenistic", chart_data)
+        if graph_rules:
+            prompt = prompt + "\n\n" + graph_rules
+        # Inject few-shot exemplars for interpretation quality
+        exemplar_block = select_exemplars("Hellenistic", chart_data)
+        if exemplar_block:
+            prompt = prompt + "\n\n" + exemplar_block
+        # Inject cross-system convergence summary from Validation Matrix
+        conv_summary = chart_data.get("validation", {}).get("convergence_summary", "")
+        if conv_summary:
+            prompt = prompt + "\n\n" + conv_summary
 
-        response = gateway.generate(
-            system_prompt=self.SYSTEM_PROMPT,
-            user_prompt=prompt,
-            model=settings.hellenistic_expert_model,
-            reasoning_effort="high"
-        )
+        if settings.ensemble_mode:
+            response = ensemble_generate(
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=prompt,
+                model=settings.hellenistic_expert_model,
+                max_tokens=3000,
+            )
+        else:
+            response = gateway.generate(
+                system_prompt=self.SYSTEM_PROMPT,
+                user_prompt=prompt,
+                model=settings.hellenistic_expert_model,
+                max_tokens=3000,
+                temperature=0.0,
+                reasoning_effort="high",
+            )
 
         return {
             "system": "Hellenistic",

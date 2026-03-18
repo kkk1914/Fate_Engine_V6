@@ -79,10 +79,13 @@ class ValidationMatrix:
         self.events: List[PredictionEvent] = []
 
     def add_prediction(self, event: PredictionEvent):
-        """Add prediction from any system."""
-        # Normalize confidence by technique
+        """Add prediction from any system.
+
+        Applies technique weight ONCE. Events must arrive with confidence=1.0
+        (raw) so that add_prediction is the single authority for weighting.
+        """
         weight = self.TECHNIQUE_WEIGHTS.get(event.technique, 0.5)
-        event.confidence = min(1.0, event.confidence * weight)
+        event.confidence = min(1.0, weight)  # apply weight once, not multiplied
         self.events.append(event)
 
     def find_convergences(self, tolerance_days: int = 30) -> List[Dict[str, Any]]:
@@ -105,11 +108,13 @@ class ValidationMatrix:
                         matches.append(event2)
 
             # ── Accept 2+ cross-system agreements ────────────────────────────
-            unique_systems = list(set(e.system for e in matches))
+            unique_systems = sorted(set(e.system for e in matches))
             if len(unique_systems) >= 2:
                 # Weighted combined confidence: average * system-count bonus
                 avg_conf = sum(e.confidence for e in matches) / len(matches)
-                system_bonus = min(1.0, 0.85 + len(unique_systems) * 0.05)
+                # System bonus: properly rewards multi-system agreement
+                # 2 systems = 0.90, 3 = 1.0, 4 = 1.0
+                system_bonus = min(1.0, 0.70 + len(unique_systems) * 0.10)
                 combined = avg_conf * system_bonus
 
                 convergences.append({
@@ -120,7 +125,7 @@ class ValidationMatrix:
                     "systems":              unique_systems,
                     "intensity":            len(unique_systems),
                     "cross_system":         True,
-                    "techniques":           list(set(e.technique for e in matches)),
+                    "techniques":           sorted(set(e.technique for e in matches)),
                 })
 
         # Sort by intensity (system count) then confidence
@@ -158,12 +163,22 @@ class ValidationMatrix:
 
         return contradictions
 
+    @staticmethod
+    def _ensure_aware(dt: datetime) -> datetime:
+        """Make naive datetime UTC-aware; pass-through if already aware."""
+        from datetime import timezone
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     def _is_temporal_match(self, e1: PredictionEvent, e2: PredictionEvent,
                            days: int) -> bool:
         """Check if two events overlap within tolerance."""
-        # Check if date ranges overlap
-        start1, end1 = e1.date_range
-        start2, end2 = e2.date_range
+        # Check if date ranges overlap — normalize tz-awareness first
+        start1 = self._ensure_aware(e1.date_range[0])
+        end1 = self._ensure_aware(e1.date_range[1])
+        start2 = self._ensure_aware(e2.date_range[0])
+        end2 = self._ensure_aware(e2.date_range[1])
 
         # Extend ranges by tolerance
         from datetime import timedelta
@@ -172,40 +187,61 @@ class ValidationMatrix:
 
         return (start1 <= end2) and (start2 <= end1)
 
+    # Domain groups: houses that share a life domain can converge
+    DOMAIN_GROUPS = {
+        "Career":       {2, 6, 10},
+        "Family":       {4, 5, 7},
+        "Identity":     {1, 12},
+        "Wealth":       {2, 8, 11},
+        "Relationship": {5, 7},
+    }
+
     def _is_thematic_match(self, e1: PredictionEvent, e2: PredictionEvent) -> bool:
         """Check if themes align.
 
         Tiered matching:
           1. Direct theme-string match
-          2. Same house number
-          3. Overlapping house keywords
-          4. Either event uses house 1 (the default "unknown house" placeholder) —
-             don't let a missing house assignment block cross-system convergence
-          5. Cross-system temporal agreement alone is meaningful when all house
-             keywords are non-overlapping (planets simply rule different life areas
-             but their timing still co-activates) — return True as fallback so the
-             arbiter/LLM can decide relevance from the actual descriptions
+          2. Shared planet involvement (e.g., both involve Jupiter)
+          3. Same house number (excluding 0/None = unassigned)
+          4. Same domain group (Career, Family, Wealth, etc.)
+          5. Overlapping house keywords
+
+        Time-proximity alone is NOT sufficient — prevents the "Everything
+        Everywhere" problem where career, child, and marriage predictions
+        merge into one cluster just because they fall in the same month.
         """
         # Direct theme match
         if e1.theme == e2.theme:
             return True
 
-        # House match (same house number)
-        if e1.house_involved == e2.house_involved:
+        # Shared planet involvement (strong signal)
+        if (e1.planets_involved and e2.planets_involved and
+                set(e1.planets_involved) & set(e2.planets_involved)):
             return True
 
-        # Check overlapping keywords
-        themes1 = set(self.HOUSE_THEMES.get(e1.house_involved, []))
-        themes2 = set(self.HOUSE_THEMES.get(e2.house_involved, []))
-        if len(themes1 & themes2) > 0:
+        # Skip unassigned houses (0 or None)
+        h1 = e1.house_involved or 0
+        h2 = e2.house_involved or 0
+        if h1 == 0 or h2 == 0:
+            return False
+
+        # Same house number
+        if h1 == h2:
             return True
 
-        # House 1 is the default placeholder — don't penalise missing house data
-        if e1.house_involved == 1 or e2.house_involved == 1:
+        # Same domain group
+        for group in self.DOMAIN_GROUPS.values():
+            if h1 in group and h2 in group:
+                return True
+
+        # Overlapping house keywords
+        themes1 = set(self.HOUSE_THEMES.get(h1, []))
+        themes2 = set(self.HOUSE_THEMES.get(h2, []))
+        if themes1 & themes2:
             return True
 
-        # Cross-system temporal alignment is itself meaningful — let timing decide
-        return True
+        # No thematic overlap — temporal proximity alone is not enough
+        return False
 
     def _is_contradictory(self, e1: PredictionEvent, e2: PredictionEvent) -> bool:
         """Determine if two predictions contradict."""
@@ -251,8 +287,9 @@ class ValidationMatrix:
         from datetime import timezone
         timestamps = []
         for e in events:
-            mid = e.date_range[0] + (e.date_range[1] - e.date_range[0]) / 2
-            # Convert to Unix timestamp (float) for math
+            s = self._ensure_aware(e.date_range[0])
+            en = self._ensure_aware(e.date_range[1])
+            mid = s + (en - s) / 2
             timestamps.append(mid.timestamp())
 
         # Average the timestamps
