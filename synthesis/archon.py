@@ -1693,10 +1693,15 @@ class QuestionRouter:
 
     def _build_tier3_timing(self, relevant_planets: list, relevant_houses: list,
                              chart_data: dict, ref: dict,
-                             temporal_clusters: list) -> list:
+                             temporal_clusters: list,
+                             validation_matrix=None,
+                             domain_keywords: list = None) -> list:
         """
         Tier 3: Future timing — transits, profections, dashas, storm windows.
-        All future-filtered.
+
+        When validation_matrix + domain_keywords are provided, replaces raw
+        data dumps with pre-scored top-3 convergence windows. The LLM receives
+        only mathematically proven timing instead of picking dates freely.
         """
         lines = ["── TIER 3: FUTURE TIMING (all dates after TODAY) ──"]
 
@@ -1710,11 +1715,32 @@ class QuestionRouter:
         dasha       = v_pred.get("vimshottari", {})
         liu_nian    = b_pred.get("liu_nian_timeline", [])
 
-        # Active time lords
+        # Active time lords (always included — factual state, not raw dumps)
         lines.append(f"Active Dasha: {dasha.get('maha_lord','?')} MD / "
                      f"{dasha.get('antar_lord','?')} AD")
         lines.append(f"Current Profection: House {ref.get('_profection_house','?')}, "
                      f"Time Lord={ref.get('_time_lord','?')}")
+
+        # ── Pre-scored convergence windows (replaces raw data dumps) ──────
+        if validation_matrix and domain_keywords:
+            clusters = validation_matrix.query_temporal_clusters(
+                domain_keywords, tolerance_days=30, top_n=3)
+            if clusters:
+                lines.append("")
+                lines.append("MATHEMATICALLY PROVEN TIMING WINDOWS (top 3 convergences):")
+                lines.append("CRITICAL: Use ONLY these windows for timing predictions.")
+                lines.append("Do NOT invent dates or cite raw transits not listed here.")
+                for i, c in enumerate(clusters, 1):
+                    date_str = c["convergence_date"].strftime("%Y-%m-%d")
+                    lines.append(
+                        f"  [{i}] ~{date_str} | "
+                        f"confidence={c['combined_confidence']:.3f} | "
+                        f"systems: {', '.join(c['systems'])} | "
+                        f"techniques: {', '.join(c['techniques'])} | "
+                        f"theme: {c['theme_consensus']}"
+                    )
+                lines.append("")
+                return lines  # Skip raw dumps — LLM has mathematically proven windows
 
         # Profection years — show ALL so LLM can compare across full timeline
         if profecs:
@@ -1859,7 +1885,8 @@ class QuestionRouter:
                               chart_data: dict,
                               temporal_clusters: list,
                               ref: dict,
-                              question_num: int) -> str:
+                              question_num: int,
+                              validation_matrix=None) -> str:
         """
         Build a tailored, future-filtered evidence block for a single question.
         Three-tier architecture: Universal → House-based → Timing.
@@ -1916,8 +1943,15 @@ class QuestionRouter:
         lines.append("")
 
         # TIER 3 — Future timing
+        # Derive domain keywords from detected houses for cluster filtering
+        domain_keywords: list = []
+        if validation_matrix is not None:
+            from synthesis.validation_matrix import ValidationMatrix
+            for h in relevant_houses:
+                domain_keywords.extend(ValidationMatrix.HOUSE_THEMES.get(h, []))
         lines.extend(self._build_tier3_timing(
-            relevant_planets, relevant_houses, chart_data, ref, temporal_clusters))
+            relevant_planets, relevant_houses, chart_data, ref, temporal_clusters,
+            validation_matrix=validation_matrix, domain_keywords=domain_keywords))
 
         lines.append("")
         lines.append(f"═══ END EVIDENCE: Question {question_num} ═══")
@@ -1939,13 +1973,13 @@ class Archon:
     }
 
     TEMP_MAP = {
-        "oracle":          0.50,   # warm but controlled — hook writing
-        "natal":           0.30,   # precise diagnosis — consistency critical
-        "current":         0.20,   # factual briefing — near-deterministic
-        "year_forecast":   0.30,   # precise + consistent predictions
-        "almanac_summary": 0.20,   # precision-first — data-grounded window map
-        "directive":       0.30,   # crisp orders
-        "questions":       0.20,   # Q&A answers must be reproducible
+        "oracle":          0.0,    # deterministic — evidence retrieval
+        "natal":           0.0,    # deterministic — evidence retrieval
+        "current":         0.0,    # deterministic — evidence retrieval
+        "year_forecast":   0.0,    # deterministic — evidence retrieval
+        "almanac_summary": 0.0,    # deterministic — evidence retrieval
+        "directive":       0.0,    # deterministic — evidence retrieval
+        "questions":       0.0,    # deterministic — evidence retrieval
     }
 
     # gemini-2.5-pro counts thinking tokens against max_output_tokens.
@@ -1963,6 +1997,96 @@ class Archon:
 
     # Keep thinking minimal for creative writing — output tokens matter more than reasoning depth
     ARCHON_REASONING_EFFORT = "low"
+
+    # ── Evidence Plan schema for two-pass generation ─────────────────────────
+    # First pass: LLM outputs structured JSON declaring which facts it will cite.
+    # Second pass: validated plan constrains prose generation.
+    EVIDENCE_PLAN_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "section_theme": {"type": "string"},
+            "planet_citations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "planet":            {"type": "string"},
+                        "degree_dms":        {"type": "string"},
+                        "sign":              {"type": "string"},
+                        "house":             {"type": "integer"},
+                        "role_in_argument":  {"type": "string"},
+                    },
+                    "required": ["planet", "degree_dms", "sign"],
+                },
+            },
+            "transit_citations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "transiting_planet": {"type": "string"},
+                        "aspect":            {"type": "string"},
+                        "natal_point":       {"type": "string"},
+                        "exact_date":        {"type": "string"},
+                        "entry_date":        {"type": "string"},
+                        "exit_date":         {"type": "string"},
+                        "significance":      {"type": "string"},
+                    },
+                    "required": ["transiting_planet", "aspect", "natal_point"],
+                },
+            },
+            "dasha_citations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "level":     {"type": "string"},
+                        "lord":      {"type": "string"},
+                        "relevance": {"type": "string"},
+                    },
+                    "required": ["level", "lord"],
+                },
+            },
+            "storm_windows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "window_id":  {"type": "string"},
+                        "start_date": {"type": "string"},
+                        "end_date":   {"type": "string"},
+                        "score":      {"type": "number"},
+                        "usage":      {"type": "string"},
+                    },
+                    "required": ["window_id", "start_date", "end_date"],
+                },
+            },
+            "key_claims": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": ["section_theme", "planet_citations", "key_claims"],
+    }
+
+    # ── Domain Ledger schema — structured extraction of expert findings ────────
+    DOMAIN_LEDGER_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "domains": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "domain": {"type": "string"},
+                        "bullets": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["domain", "bullets"],
+                },
+            },
+        },
+        "required": ["domains"],
+    }
 
     def __init__(self):
         # Issue 5: caches year chapter summaries so Q&A can reference them
@@ -1984,7 +2108,8 @@ class Archon:
                         language: str = "en",
                         original_questions: list = None,
                         verdict_ledger: dict = None,
-                        citation_data: dict = None) -> dict:
+                        citation_data: dict = None,
+                        validation_matrix=None) -> dict:
         """
         Generate the Celestial Dossier.
         user_questions: list of up to 5 question strings (English).
@@ -2011,8 +2136,11 @@ class Archon:
         wealth_score  = _compute_wealth_score(chart_data, ref)
         wealth_block  = _format_wealth_score_block(wealth_score)
 
-        # Issue 3: build expert block (4500 chars per expert, bypasses Arbiter truncation)
-        expert_block = self._build_expert_block(expert_analyses)
+        # Domain Ledger: structured extraction replaces character truncation
+        expert_block = self._build_domain_ledger(expert_analyses)
+        if not expert_block:
+            # Graceful degradation: fall back to truncated expert block
+            expert_block = self._build_expert_block(expert_analyses)
 
         # Build citation registry for post-generation validation
         citation_registry = self._build_citation_registry(chart_data, ref, temporal_clusters or [])
@@ -2029,6 +2157,7 @@ class Archon:
         self._almanac_cache = {}
         self._section_memory = []
         self._hard_rules = []
+        self._validation_matrix = validation_matrix
 
         # Initialize universal post-generation validator
         self._post_validator = PostValidator(chart_data)
@@ -2096,12 +2225,23 @@ class Archon:
             )
             sys_prompt = self._get_system_prompt(sd)
 
+            # ── Two-pass evidence-validated generation ──────────────────
+            evidence_plan = self._generate_evidence_plan(
+                prompt, sd, citation_registry)
+            if evidence_plan:
+                validated_plan = self._validate_evidence_plan(
+                    evidence_plan, citation_registry)
+                prose_prompt = self._build_prose_from_plan(
+                    prompt, validated_plan, sd)
+            else:
+                prose_prompt = prompt  # graceful degradation
+
             response = gateway.generate(
                 system_prompt    = sys_prompt,
-                user_prompt      = prompt,
+                user_prompt      = prose_prompt,
                 model            = self.MODEL_MAP.get(sd["type"], settings.archon_model),
                 max_tokens       = self.MAX_TOKENS_MAP.get(sd["type"], 5000),
-                temperature      = self.TEMP_MAP.get(sd["type"], 0.70),
+                temperature      = self.TEMP_MAP.get(sd["type"], 0.0),
                 # Questions: high reasoning. Year forecasts + almanac: medium (cross-reference dates).
                 reasoning_effort = (
                     "high" if sd.get("id") == "questions"
@@ -2401,6 +2541,7 @@ ABSOLUTE RULES (apply to ALL sections):
                     temporal_clusters=temporal_clusters_raw or [],
                     ref=ref,
                     question_num=i,
+                    validation_matrix=self._validation_matrix,
                 )
                 evidence_blocks.append(eb)
 
@@ -2512,6 +2653,137 @@ ABSOLUTE RULES (apply to ALL sections):
             "- Every claim must reference specific planetary evidence",
         ]
         return "\n\n".join(p for p in parts if p)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Two-pass evidence-validated generation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _generate_evidence_plan(self, prompt: str, sd: dict,
+                                 citation_registry: dict):
+        """First pass: LLM outputs a structured evidence plan declaring which
+        facts it will cite.  Returns validated plan dict, or None on failure."""
+        import json as _json
+
+        registry_json = _json.dumps(citation_registry, indent=2, default=str)
+        evidence_prompt = (
+            "You are planning the evidence for an astrological report section.\n"
+            "Given the chart data below, output a JSON evidence plan listing "
+            "ONLY facts you can verify from the CITATION REGISTRY.\n"
+            "Do NOT invent degrees, dates, or positions.\n\n"
+            f"=== CITATION REGISTRY (ground truth) ===\n{registry_json}\n"
+            f"=== END REGISTRY ===\n\n"
+            f"SECTION DATA AND CONTEXT:\n{prompt}\n\n"
+            "Output your evidence plan as JSON matching the schema."
+        )
+
+        response = gateway.structured_generate(
+            system_prompt="You are a factual evidence planner for astrological reports. "
+                          "Extract ONLY verifiable facts from the registry.",
+            user_prompt=evidence_prompt,
+            output_schema=self.EVIDENCE_PLAN_SCHEMA,
+            model=self.MODEL_MAP.get(sd["type"], settings.archon_model),
+            max_tokens=3000,
+            temperature=0.0,
+            reasoning_effort="low",
+        )
+
+        if not response.get("success") or not response.get("data"):
+            logger.warning(f"Evidence plan failed for {sd.get('id', '?')}: "
+                           f"{response.get('error', 'no data')}")
+            return None
+
+        return response["data"]
+
+    def _validate_evidence_plan(self, plan: dict, citation_registry: dict) -> dict:
+        """Validate each fact in the evidence plan against the citation registry.
+        Drops invalid claims; overwrites with ground-truth where possible."""
+
+        validated_planets = []
+        for pc in plan.get("planet_citations", []):
+            planet = pc.get("planet", "")
+            registry_val = citation_registry.get(planet, "")
+            if not registry_val:
+                logger.warning(f"Evidence plan: planet '{planet}' not in registry — dropped")
+                continue
+            claimed_sign = pc.get("sign", "")
+            if claimed_sign and claimed_sign not in registry_val:
+                logger.warning(f"Evidence plan: {planet} claimed {claimed_sign}, "
+                               f"registry has {registry_val} — correcting")
+                if "'" in registry_val:
+                    pc["degree_dms"] = registry_val.split("'")[0] + "'"
+                    pc["sign"] = registry_val.split("'")[-1].strip()
+            validated_planets.append(pc)
+
+        validated_transits = []
+        for tc in plan.get("transit_citations", []):
+            key = (f"{tc.get('transiting_planet', '?')}_"
+                   f"{tc.get('aspect', '?')}_"
+                   f"{tc.get('natal_point', '?')}")
+            registry_val = citation_registry.get(key, "")
+            if not registry_val:
+                logger.warning(f"Evidence plan: transit '{key}' not in registry — dropped")
+                continue
+            # Overwrite dates with registry ground truth
+            for part in registry_val.split(", "):
+                if part.startswith("exact "):
+                    tc["exact_date"] = part[6:]
+                elif part.startswith("entry "):
+                    tc["entry_date"] = part[6:]
+                elif part.startswith("exit "):
+                    tc["exit_date"] = part[5:]
+            validated_transits.append(tc)
+
+        validated_dasha = []
+        for dc in plan.get("dasha_citations", []):
+            level = dc.get("level", "").lower()
+            reg_key = "Maha_Dasha" if "maha" in level else "Antar_Dasha"
+            if citation_registry.get(reg_key):
+                validated_dasha.append(dc)
+            else:
+                logger.warning(f"Evidence plan: dasha '{level}' not in registry — dropped")
+
+        validated_storms = []
+        for sw in plan.get("storm_windows", []):
+            wid = sw.get("window_id", "")
+            if citation_registry.get(wid):
+                validated_storms.append(sw)
+
+        plan["planet_citations"] = validated_planets
+        plan["transit_citations"] = validated_transits
+        plan["dasha_citations"] = validated_dasha
+        plan["storm_windows"] = validated_storms
+
+        logger.info(
+            f"Evidence plan validated: {len(validated_planets)} planets, "
+            f"{len(validated_transits)} transits, {len(validated_dasha)} dasha, "
+            f"{len(validated_storms)} storm windows"
+        )
+        return plan
+
+    def _build_prose_from_plan(self, original_prompt: str,
+                                validated_plan: dict, sd: dict) -> str:
+        """Prepend the validated evidence plan to the prose prompt as a
+        hard constraint."""
+        import json as _json
+
+        plan_json = _json.dumps(validated_plan, indent=2, default=str)
+        plan_block = (
+            "=== VALIDATED EVIDENCE PLAN (MANDATORY — use ONLY these facts) ===\n"
+            f"{plan_json}\n"
+            "=== END EVIDENCE PLAN ===\n\n"
+            "CRITICAL RULES:\n"
+            "1. You may ONLY cite planets, degrees, dates, and dasha lords "
+            "listed in the evidence plan above.\n"
+            "2. Do NOT invent, round, or approximate any degree or date "
+            "not in the plan.\n"
+            "3. Every [bracketed citation] must correspond to an entry in "
+            "the evidence plan.\n"
+            "4. If the plan has no transit citations, do NOT mention "
+            "transit dates.\n"
+            "5. You may make interpretive claims, but every factual anchor "
+            "must come from the plan.\n\n"
+        )
+        return plan_block + original_prompt
 
     # ─────────────────────────────────────────────────────────────────────────
     # Cross-section memory — consistency enforcement
@@ -3037,6 +3309,109 @@ ABSOLUTE RULES (apply to ALL sections):
             )
 
         return ""
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Domain Ledger: structured extraction replacing character truncation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _extract_domain_bullets(self, system_name: str, analysis_text: str) -> Optional[Dict[str, List[str]]]:
+        """Extract all astrological findings from one expert into domain-keyed bullets.
+
+        Returns dict mapping domain name → list of bullet strings, or None on failure.
+        Uses structured_generate with DOMAIN_LEDGER_SCHEMA for guaranteed JSON.
+        """
+        system_prompt = (
+            "You are an astrological data extraction engine. "
+            "Extract ALL findings from the expert analysis into bullet points "
+            "organized by life domain (Career, Relationships, Health, Finances, "
+            "Identity, Family, Spirituality, Communication, etc.). "
+            "Preserve ALL dates, degrees, planet positions, house numbers, "
+            "and aspect descriptions exactly as stated. "
+            "Do NOT interpret or editorialise — categorize and list."
+        )
+        user_prompt = f"SYSTEM: {system_name}\n\nANALYSIS:\n{analysis_text}"
+
+        result = gateway.structured_generate(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            output_schema=self.DOMAIN_LEDGER_SCHEMA,
+            model="gemini-2.5-flash-lite",
+            max_tokens=2000,
+            temperature=0.0,
+        )
+
+        if not result.get("success") or not result.get("data"):
+            logger.warning(f"Domain ledger extraction failed for {system_name}: "
+                           f"{result.get('error', 'unknown')}")
+            return None
+
+        # Parse into domain → bullets dict
+        domains_data = result["data"].get("domains", [])
+        domain_dict: Dict[str, List[str]] = {}
+        for entry in domains_data:
+            domain = entry.get("domain", "Other")
+            bullets = entry.get("bullets", [])
+            if bullets:
+                domain_dict[domain] = [f"[{system_name}] {b}" for b in bullets]
+        return domain_dict
+
+    def _build_domain_ledger(self, expert_analyses: list) -> str:
+        """Build a Domain Ledger by extracting expert outputs into domain-keyed bullets.
+
+        Calls gemini-2.5-flash-lite for each expert system in parallel, merges results
+        by life domain, and formats as a structured evidence block. Falls back to
+        _build_expert_block() if all extractions fail.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        if not expert_analyses:
+            return ""
+
+        # Filter to experts with actual analysis text
+        valid_experts = [
+            a for a in expert_analyses
+            if a.get("analysis") and a.get("system")
+        ]
+        if not valid_experts:
+            return ""
+
+        # Parallel extraction — 4 experts, 4 workers
+        merged: Dict[str, List[str]] = {}
+        futures = {}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            for exp in valid_experts:
+                fut = executor.submit(
+                    self._extract_domain_bullets,
+                    exp["system"],
+                    exp["analysis"],
+                )
+                futures[fut] = exp["system"]
+
+            for fut in as_completed(futures):
+                system_name = futures[fut]
+                try:
+                    domain_dict = fut.result()
+                    if domain_dict:
+                        for domain, bullets in domain_dict.items():
+                            merged.setdefault(domain, []).extend(bullets)
+                except Exception as e:
+                    logger.warning(f"Domain ledger thread failed for {system_name}: {e}")
+
+        if not merged:
+            logger.warning("All domain ledger extractions failed, falling back to expert block")
+            return ""
+
+        # Format into structured text block
+        lines = ["═══ DOMAIN LEDGER (structured expert evidence) ═══", ""]
+        # Sort domains for consistent output
+        for domain in sorted(merged.keys()):
+            lines.append(f"▸ {domain.upper()}")
+            for bullet in merged[domain]:
+                lines.append(f"  • {bullet}")
+            lines.append("")
+
+        lines.append("═══ END DOMAIN LEDGER ═══")
+        return "\n".join(lines)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Issue 3: Expert block builder (bypasses Arbiter truncation)
@@ -4471,6 +4846,7 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
                 temporal_clusters=temporal_clusters,
                 ref=ref,
                 question_num=i + 1,
+                validation_matrix=self._validation_matrix,
             )
             domain_contexts[i] = self._match_domain_context(q, domain_kb)
 

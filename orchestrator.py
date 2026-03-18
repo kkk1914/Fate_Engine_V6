@@ -357,7 +357,8 @@ class FatesOrchestrator:
                    language=language,
                    original_questions=original_questions,
                    verdict_ledger=verdict_ledger,
-                   citation_data=citation_data)
+                   citation_data=citation_data,
+                   validation_matrix=validation_matrix)
 
         # 6. Save with timestamp
         os.makedirs(output_dir, exist_ok=True)

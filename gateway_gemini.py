@@ -75,7 +75,8 @@ def _gemini_thinking_level(reasoning_effort: Optional[str]) -> Optional[str]:
 def _gemini_generate(model: str, system_prompt: str, user_prompt: str,
                      max_tokens: int, temperature: float,
                      reasoning_effort: Optional[str] = None,
-                     json_mode: bool = False) -> Dict[str, Any]:
+                     json_mode: bool = False,
+                     output_schema: dict = None) -> Dict[str, Any]:
     """
     Call Google Gemini via google-generativeai SDK.
     Handles Gemini 2.x and Gemini 3.x models.
@@ -97,6 +98,9 @@ def _gemini_generate(model: str, system_prompt: str, user_prompt: str,
     # JSON output mode
     if json_mode:
         gen_cfg["response_mime_type"] = "application/json"
+        # Native schema enforcement — guarantees conformant JSON at API level
+        if output_schema:
+            gen_cfg["response_schema"] = output_schema
 
     # System instruction
     generation_config = genai.GenerationConfig(**gen_cfg)
@@ -150,7 +154,8 @@ def _gemini_generate(model: str, system_prompt: str, user_prompt: str,
 def _openai_generate(model: str, system_prompt: str, user_prompt: str,
                      max_tokens: int, temperature: float,
                      reasoning_effort: Optional[str] = None,
-                     json_mode: bool = False) -> Dict[str, Any]:
+                     json_mode: bool = False,
+                     output_schema: dict = None) -> Dict[str, Any]:
     client = _get_openai()
 
     # Reasoning models require temperature=1
@@ -170,7 +175,17 @@ def _openai_generate(model: str, system_prompt: str, user_prompt: str,
     if reasoning_effort:
         params["reasoning_effort"] = reasoning_effort
     if json_mode:
-        params["response_format"] = {"type": "json_object"}
+        if output_schema:
+            params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "output",
+                    "schema": output_schema,
+                    "strict": True,
+                },
+            }
+        else:
+            params["response_format"] = {"type": "json_object"}
 
     max_retries = 3
     for attempt in range(max_retries):
@@ -289,13 +304,13 @@ class LLMGateway:
                 result = _gemini_generate(
                     model, system_with_schema, user_prompt,
                     max_tokens, temperature, reasoning_effort,
-                    json_mode=True,
+                    json_mode=True, output_schema=output_schema,
                 )
             else:
                 result = _openai_generate(
                     model, system_with_schema, user_prompt,
                     max_tokens, temperature, reasoning_effort,
-                    json_mode=True,
+                    json_mode=True, output_schema=output_schema,
                 )
 
             if not result.get("success"):

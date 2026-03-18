@@ -78,6 +78,18 @@ class ValidationMatrix:
     def __init__(self):
         self.events: List[PredictionEvent] = []
 
+    @staticmethod
+    def _probabilistic_confidence(events: List[PredictionEvent]) -> float:
+        """P(at least one correct) = 1 - ∏(1 - P(event_i)).
+
+        Assumes independence between systems/techniques. Naturally rewards
+        multi-system convergence without an arbitrary system bonus.
+        """
+        product_complement = 1.0
+        for e in events:
+            product_complement *= (1.0 - e.confidence)
+        return round(1.0 - product_complement, 4)
+
     def add_prediction(self, event: PredictionEvent):
         """Add prediction from any system.
 
@@ -91,16 +103,26 @@ class ValidationMatrix:
     def find_convergences(self, tolerance_days: int = 30) -> List[Dict[str, Any]]:
         """
         Find where 2+ systems agree on timing and theme.
-        FIX: Was 3+ systems — too restrictive when rare techniques (ZR L2, Da Yun)
-        are involved. 2-system convergence is meaningful and now captured.
-        Combined confidence is weighted by both technique authority and system count.
+        Uses probabilistic confidence: P(≥1 correct) = 1 - ∏(1 - P_i).
+        """
+        return self._find_convergences_for_events(self.events, tolerance_days)
+
+    def _find_convergences_for_events(
+        self,
+        events: List[PredictionEvent],
+        tolerance_days: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """Core convergence logic operating on an explicit event list.
+
+        Extracted so query_temporal_clusters can run convergences on a
+        filtered subset without modifying self.events.
         """
         convergences = []
 
-        for i, event1 in enumerate(self.events):
+        for i, event1 in enumerate(events):
             matches = [event1]
 
-            for event2 in self.events[i + 1:]:
+            for event2 in events[i + 1:]:
                 if event2.system == event1.system:
                     continue   # Same system doesn't count as cross-validation
                 if self._is_temporal_match(event1, event2, tolerance_days):
@@ -110,12 +132,7 @@ class ValidationMatrix:
             # ── Accept 2+ cross-system agreements ────────────────────────────
             unique_systems = sorted(set(e.system for e in matches))
             if len(unique_systems) >= 2:
-                # Weighted combined confidence: average * system-count bonus
-                avg_conf = sum(e.confidence for e in matches) / len(matches)
-                # System bonus: properly rewards multi-system agreement
-                # 2 systems = 0.90, 3 = 1.0, 4 = 1.0
-                system_bonus = min(1.0, 0.70 + len(unique_systems) * 0.10)
-                combined = avg_conf * system_bonus
+                combined = self._probabilistic_confidence(matches)
 
                 convergences.append({
                     "events":               matches,
@@ -140,6 +157,50 @@ class ValidationMatrix:
                 seen_events.add(keys)
                 deduped.append(c)
         return deduped
+
+    def query_temporal_clusters(
+        self,
+        domain_keywords: List[str],
+        tolerance_days: int = 30,
+        top_n: int = 3,
+    ) -> List[Dict[str, Any]]:
+        """Filter events by domain keywords and return top-N convergences.
+
+        Maps keywords to relevant houses via HOUSE_THEMES, filters events
+        to those matching domain (house or theme), then runs convergence
+        logic on the filtered set. Returns top_n results sorted by
+        combined_confidence descending.
+        """
+        if not domain_keywords:
+            return []
+
+        # Map keywords → relevant houses (case-insensitive)
+        kw_lower = {kw.lower() for kw in domain_keywords}
+        relevant_houses = set()
+        for house, themes in self.HOUSE_THEMES.items():
+            for theme in themes:
+                if theme.lower() in kw_lower:
+                    relevant_houses.add(house)
+
+        if not relevant_houses:
+            return []
+
+        # Filter events to matching house or theme
+        filtered = [
+            e for e in self.events
+            if (e.house_involved in relevant_houses)
+            or (e.theme.lower() in kw_lower)
+        ]
+
+        if len(filtered) < 2:
+            return []
+
+        # Run convergence logic on filtered subset
+        convergences = self._find_convergences_for_events(filtered, tolerance_days)
+
+        # Sort by confidence descending, return top N
+        convergences.sort(key=lambda x: x["combined_confidence"], reverse=True)
+        return convergences[:top_n]
 
     def find_contradictions(self) -> List[Dict[str, Any]]:
         """

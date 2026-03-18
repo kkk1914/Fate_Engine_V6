@@ -111,6 +111,9 @@ class LLMGateway:
             "response_mime_type": "application/json",
             "seed": seed,
         }
+        # Native schema enforcement — guarantees 100% conformant JSON at API level
+        if output_schema:
+            config_kwargs["response_schema"] = output_schema
         if "flash-lite" not in model:
             config_kwargs["temperature"] = temperature
         if thinking_cfg:
