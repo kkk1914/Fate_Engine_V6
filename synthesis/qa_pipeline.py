@@ -203,6 +203,21 @@ class ClaimExtractor:
         return "\n".join(lines)
 
 
+def _scrub_scores(verdict_data: dict) -> dict:
+    """Remove convergence_score from timing_windows before NARRATE.
+
+    The NARRATE prompt must never see raw floats — it should use
+    confidence labels (NEAR-CERTAIN, HIGH-CONFIDENCE, etc.) instead.
+    Prevents the LLM from leaking decimal scores into prose output.
+    """
+    import copy
+    scrubbed = copy.deepcopy(verdict_data)
+    for window in scrubbed.get("timing_windows", []):
+        if "convergence_score" in window:
+            del window["convergence_score"]
+    return scrubbed
+
+
 class QAPipeline:
     """Per-question multi-step reasoning pipeline.
 
@@ -500,11 +515,13 @@ CRITICAL: All dates must be AFTER {today}. Do not cite past dates."""
                     ]
 
         # Step 3: NARRATE — final prose (reasoning_effort="medium" for better quality)
+        # Scrub raw convergence_score floats before NARRATE to prevent decimal leakage
+        narrate_data = _scrub_scores(verdict_data)
         narrate_prompt = self.NARRATE_PROMPT.format(
             question=question,
-            confidence=verdict_data.get("confidence", "MODERATE-CONFIDENCE"),
-            confidence_reason=verdict_data.get("confidence_reason", ""),
-            verified_json=json.dumps(verdict_data, indent=2),
+            confidence=narrate_data.get("confidence", "MODERATE-CONFIDENCE"),
+            confidence_reason=narrate_data.get("confidence_reason", ""),
+            verified_json=json.dumps(narrate_data, indent=2),
             today=self.today_str,
         )
 

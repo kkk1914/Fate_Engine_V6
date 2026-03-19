@@ -48,7 +48,7 @@ from experts.hellenistic_expert import HellenisticExpert
 
 # Synthesis layer
 from synthesis.validation_matrix import ValidationMatrix, PredictionEvent
-from synthesis.temporal_aligner import TemporalAligner
+# TemporalAligner deleted — convergences flow directly from ValidationMatrix
 from synthesis.arbiter import Arbiter
 from synthesis.archon import Archon
 from query_engine import build_query_context
@@ -88,6 +88,86 @@ _BAZI_ELEMENT_RELATIONS = {
     "Metal": {"Output": "Water", "Wealth": "Wood",  "Power": "Fire",  "Resource": "Earth", "Companion": "Metal"},
     "Water": {"Output": "Wood",  "Wealth": "Fire",  "Power": "Earth", "Resource": "Metal", "Companion": "Water"},
 }
+
+
+def _datetime_to_jd(dt) -> float:
+    """Convert datetime to Julian Day."""
+    from datetime import timezone as tz
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz.utc)
+    # J2000.0 epoch: 2000-01-01T12:00:00 UTC = JD 2451545.0
+    j2000 = datetime(2000, 1, 1, 12, 0, 0, tzinfo=tz.utc)
+    delta = dt - j2000
+    return 2451545.0 + delta.total_seconds() / 86400.0
+
+
+def _convergences_to_clusters(convergences: list, natal_jd: float) -> list:
+    """Convert ValidationMatrix convergences to the cluster format archon expects.
+
+    Maps: convergence_date → center_jd, combined_confidence → convergence_score,
+    systems → systems_involved, etc.
+    """
+    from datetime import timezone as tz
+
+    clusters = []
+    now_jd = _datetime_to_jd(datetime.now(tz.utc))
+
+    for conv in convergences:
+        center_dt = conv["convergence_date"]
+        center_jd = _datetime_to_jd(center_dt)
+
+        # Derive start/end from event date ranges
+        all_starts = [e.date_range[0] for e in conv["events"]]
+        all_ends = [e.date_range[1] for e in conv["events"]]
+        start_jd = _datetime_to_jd(min(all_starts))
+        end_jd = _datetime_to_jd(max(all_ends))
+
+        score = conv["combined_confidence"]
+
+        # Confidence labels matching archon's expectations
+        if score >= 0.85:
+            label, light = "NEAR-CERTAIN", "🔴"
+        elif score >= 0.75:
+            label, light = "HIGH-CONFIDENCE", "🟠"
+        elif score >= 0.55:
+            label, light = "MODERATE-CONFIDENCE", "🟡"
+        else:
+            label, light = "LOW-CONFIDENCE", "🟢"
+
+        # Long-range decay
+        years_ahead = (center_jd - now_jd) / 365.25
+        long_range_decayed = years_ahead > 4
+
+        # Convert PredictionEvent objects to dicts for archon formatters
+        event_dicts = []
+        for e in conv["events"]:
+            event_dicts.append({
+                "system": e.system,
+                "technique": e.technique,
+                "description": e.description,
+                "confidence": e.confidence,
+                "jd": _datetime_to_jd(e.date_range[0]),
+            })
+
+        clusters.append({
+            "start_jd": start_jd,
+            "end_jd": end_jd,
+            "events": event_dicts,
+            "systems_involved": conv["systems"],
+            "techniques_involved": conv.get("techniques", []),
+            "intensity": len(conv["events"]),
+            "n_systems": conv["intensity"],
+            "multi_system": conv["intensity"] >= 2,
+            "avg_confidence": score,
+            "convergence_score": score,
+            "confidence_label": label,
+            "stoplight": light,
+            "long_range_decayed": long_range_decayed,
+            "center_jd": center_jd,
+        })
+
+    clusters.sort(key=lambda c: c["convergence_score"], reverse=True)
+    return clusters
 
 
 def _compute_house_lords(chart_data: Dict) -> Dict[str, Any]:
@@ -279,13 +359,9 @@ class FatesOrchestrator:
         print(f"   ✓ Found {len(convergences)} multi-system convergences")
         print(f"   ✓ Flagged {len(contradictions)} contradictions for resolution")
 
-        # Temporal alignment check
-        aligner = TemporalAligner(chart_data["meta"]["jd"])
-        clusters = aligner.find_temporal_clusters(
-            aligner.align_predictions(chart_data["predictive"]),
-            window_days=45
-        )
-        print(f"   ✓ Identified {len(clusters)} temporal 'storm windows'")
+        # Convert ValidationMatrix convergences to cluster format for Archon
+        clusters = _convergences_to_clusters(convergences, chart_data["meta"]["jd"])
+        print(f"   ✓ Converted {len(clusters)} convergences to storm windows")
 
         # 3. Expert analysis (with validation data + question focus)
         print("\n🎭 Layer 3: Expert Swarm Analysis...")

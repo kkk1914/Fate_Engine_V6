@@ -285,8 +285,9 @@ class TestProbabilisticConfidence:
         convergences = vm.find_convergences()
         assert len(convergences) >= 1
         conf = convergences[0]["combined_confidence"]
-        assert abs(conf - 0.75) < 0.001, (
-            f"Expected ~0.75 for two 0.5-weight techniques, got {conf}"
+        # Tier ceiling: two 0.5-weight (< 0.75) techniques cap at 0.74
+        assert abs(conf - 0.74) < 0.001, (
+            f"Expected ~0.74 (tier ceiling) for two 0.5-weight techniques, got {conf}"
         )
 
     def test_monotonic_increase(self):
@@ -410,3 +411,64 @@ class TestQueryTemporalClusters:
         assert abs(conf - 0.996) < 0.001, (
             f"Expected probabilistic ~0.996, got {conf}"
         )
+
+
+class TestTierCeiling:
+    """Verify tier ceiling caps weak techniques at 0.74."""
+
+    def test_tier_ceiling_caps_weak_techniques(self):
+        """Three 0.65-weight events (Transit) should cap at 0.74."""
+        events = [
+            _make_event("Western", "Transit", "2027-03-01", "2027-03-20",
+                        "Career", 10, ["Saturn"]),
+            _make_event("Vedic", "Transit", "2027-03-05", "2027-03-25",
+                        "Career", 10, ["Saturn"]),
+            _make_event("Saju", "Transit", "2027-03-08", "2027-03-28",
+                        "Career", 10, ["Saturn"]),
+        ]
+        # Apply weights
+        vm = ValidationMatrix()
+        for e in events:
+            vm.add_prediction(e)
+        # Raw: 1 - (0.35)^3 = 0.957... but ceiling caps at 0.74
+        conf = ValidationMatrix._probabilistic_confidence(vm.events)
+        assert conf == 0.74, f"Expected 0.74 (tier ceiling), got {conf}"
+
+    def test_tier_ceiling_allows_strong_technique(self):
+        """Events including one >= 0.75 weight should NOT be capped."""
+        events = [
+            _make_event("Western", "Transit", "2027-03-01", "2027-03-20",
+                        "Career", 10, ["Saturn"]),
+            _make_event("Vedic", "Primary Direction", "2027-03-05", "2027-03-25",
+                        "Career", 10, ["Saturn"]),
+        ]
+        vm = ValidationMatrix()
+        for e in events:
+            vm.add_prediction(e)
+        conf = ValidationMatrix._probabilistic_confidence(vm.events)
+        # Transit=0.65, PD=0.95 → 1-(0.35*0.05) = 0.9825, should NOT be capped
+        assert conf > 0.74, f"Should not be capped with a strong technique, got {conf}"
+        assert abs(conf - 0.9825) < 0.001, f"Expected ~0.9825, got {conf}"
+
+    def test_tier_ceiling_edge_case(self):
+        """Two 0.74-weight events cap; adding one 0.75 event uncaps."""
+        # Create events with known weights — use Shadbala (0.72) and SYZYGY (0.72)
+        events_weak = [
+            _make_event("Western", "Shadbala", "2027-03-01", "2027-03-20",
+                        "Career", 10, ["Saturn"]),
+            _make_event("Vedic", "SYZYGY", "2027-03-05", "2027-03-25",
+                        "Career", 10, ["Saturn"]),
+        ]
+        vm = ValidationMatrix()
+        for e in events_weak:
+            vm.add_prediction(e)
+        conf_capped = ValidationMatrix._probabilistic_confidence(vm.events)
+        assert conf_capped == 0.74, f"Should be capped at 0.74, got {conf_capped}"
+
+        # Add a strong technique (Solar Arc = 0.75)
+        vm.add_prediction(_make_event(
+            "Saju", "Solar Arc", "2027-03-08", "2027-03-28",
+            "Career", 10, ["Saturn"],
+        ))
+        conf_uncapped = ValidationMatrix._probabilistic_confidence(vm.events)
+        assert conf_uncapped > 0.74, f"Should be uncapped with Solar Arc, got {conf_uncapped}"

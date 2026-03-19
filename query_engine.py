@@ -4,16 +4,16 @@ steering instructions that reshape every section of the report.
 
 Flow:
   1. User submits up to 5 questions before generation
-  2. QueryEngine scans for themes (wealth, career, relationship, health, timing, identity)
+  2. QueryEngine detects themes via structured LLM call (keyword fallback)
   3. Returns a QueryContext dict with:
      - questions (cleaned list)
      - themes (detected)
+     - target_houses (astrological houses relevant to questions)
      - per-section steering blocks (injected into every prompt)
-     - part_iv_instructions (for the direct Q&A section)
 
-No API call needed — keyword-based theme detection is instant and cheap.
-The steering blocks are plain English instructions appended to each section's
-focus field, so the LLM naturally prioritizes the user's topics throughout.
+The structured LLM call returns both themes AND target_houses in one shot,
+so ValidationMatrix.query_temporal_clusters() receives exact house numbers
+instead of relying on keyword-to-house guessing.
 """
 
 from typing import List, Dict, Optional
@@ -92,6 +92,43 @@ THEMES = {
         "label": "Relocation & Geography",
         "color": "🌍",
     },
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Theme → house mapping (for deriving target_houses from detected themes)
+# ─────────────────────────────────────────────────────────────────────────────
+
+THEME_HOUSE_MAP = {
+    "wealth":       [2, 8, 11],
+    "career":       [2, 6, 10],
+    "relationship": [5, 7],
+    "health":       [1, 6, 8],
+    "timing":       [],          # timing is cross-domain
+    "identity":     [1, 12],
+    "relocation":   [4, 9, 12],
+}
+
+# Schema for structured LLM theme detection
+THEME_DETECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "themes": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": ["wealth", "career", "relationship", "health",
+                         "timing", "identity", "relocation"],
+            },
+            "description": "1-3 themes detected from the user's questions",
+        },
+        "target_houses": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Astrological houses (1-12) most relevant to the questions",
+        },
+    },
+    "required": ["themes", "target_houses"],
 }
 
 
@@ -255,20 +292,25 @@ class QueryEngine:
             questions: Raw question strings from the user (up to 5).
 
         Returns:
-            QueryContext dict, or None if no valid questions.
+            QueryContext dict with questions, themes, target_houses, steering,
+            and header_block.  Returns None if no valid questions.
         """
         # Clean and cap
         cleaned = [q.strip() for q in (questions or []) if q and q.strip()][:5]
         if not cleaned:
             return None
 
-        themes = self._detect_themes(cleaned)
+        detection = self._detect_themes(cleaned)
+        themes = detection["themes"]
+        target_houses = detection["target_houses"]
+
         steering = self._build_steering_blocks(cleaned, themes)
         header_block = self._build_header_block(cleaned, themes)
 
         return {
             "questions":     cleaned,
             "themes":        themes,
+            "target_houses": target_houses,   # house numbers for ValidationMatrix queries
             "steering":      steering,        # dict keyed by section id
             "header_block":  header_block,    # injected at top of every section prompt
         }
@@ -277,10 +319,53 @@ class QueryEngine:
     # Theme detection
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _detect_themes(self, questions: List[str]) -> List[str]:
-        """Return list of detected theme keys, ordered by relevance.
-        Uses keyword matching first; falls back to LLM classification when
-        keyword matching is ambiguous (0-1 hits)."""
+    def _detect_themes(self, questions: List[str]) -> Dict:
+        """Detect themes AND target houses via a single structured LLM call.
+
+        Returns {"themes": [...], "target_houses": [...]}.
+        Falls back to keyword matching if the LLM call fails.
+        """
+        joined = "\n".join(f"Q{i+1}: {q}" for i, q in enumerate(questions))
+
+        try:
+            from experts.gateway import gateway
+
+            result = gateway.structured_generate(
+                system_prompt=(
+                    "You are an expert astrologer. Given user questions, identify which "
+                    "life themes they ask about and which astrological houses are relevant.\n"
+                    "Valid themes: wealth, career, relationship, health, timing, identity, relocation.\n"
+                    "House reference: 1=Self, 2=Money, 3=Communication, 4=Home, 5=Children/Romance, "
+                    "6=Health/Service, 7=Marriage/Partnership, 8=Transformation/Inheritance, "
+                    "9=Travel/Higher learning, 10=Career/Status, 11=Friends/Income, 12=Spirituality/Foreign.\n"
+                    "Return 1-3 themes and the house numbers most relevant to answering them."
+                ),
+                user_prompt=f"Questions:\n{joined}",
+                output_schema=THEME_DETECTION_SCHEMA,
+                model="gemini-2.5-flash-lite",
+                max_tokens=200,
+                temperature=0.0,
+            )
+
+            if result.get("success") and result.get("data"):
+                data = result["data"]
+                themes = [t for t in data.get("themes", []) if t in THEMES]
+                houses = [h for h in data.get("target_houses", []) if 1 <= h <= 12]
+                # Fallback: derive houses from themes if LLM missed them
+                if themes and not houses:
+                    houses = sorted(set(
+                        h for t in themes for h in THEME_HOUSE_MAP.get(t, [])
+                    ))
+                return {"themes": themes, "target_houses": houses}
+
+        except Exception as e:
+            logger.debug(f"Structured theme detection failed: {e}")
+
+        # Graceful degradation: keyword fallback
+        return self._detect_themes_keyword_fallback(questions)
+
+    def _detect_themes_keyword_fallback(self, questions: List[str]) -> Dict:
+        """Keyword-based theme detection (fallback when LLM is unavailable)."""
         full_text = " ".join(questions).lower()
         scores: Dict[str, int] = {}
 
@@ -289,60 +374,14 @@ class QueryEngine:
             if hits > 0:
                 scores[theme_key] = hits
 
-        keyword_themes = sorted(scores.keys(), key=lambda k: scores[k], reverse=True)
+        themes = sorted(scores.keys(), key=lambda k: scores[k], reverse=True)
 
-        # If keyword matching found 2+ themes, trust it
-        if len(keyword_themes) >= 2:
-            return keyword_themes
+        # Derive target_houses from detected themes
+        houses = sorted(set(
+            h for t in themes for h in THEME_HOUSE_MAP.get(t, [])
+        ))
 
-        # LLM fallback for ambiguous questions (e.g. "Will my business partnership succeed?")
-        llm_themes = self._llm_classify_themes(questions)
-        if llm_themes:
-            # Merge: keyword hits first, then LLM-detected themes (no duplicates)
-            merged = list(keyword_themes)
-            for t in llm_themes:
-                if t not in merged:
-                    merged.append(t)
-            return merged
-
-        return keyword_themes
-
-    def _llm_classify_themes(self, questions: List[str]) -> List[str]:
-        """Use a cheap LLM call to classify question themes when keywords are ambiguous."""
-        try:
-            from experts.gateway import gateway
-            theme_keys = list(THEMES.keys())
-            theme_labels = {k: THEMES[k]["label"] for k in theme_keys}
-
-            prompt = (
-                f"Classify these astrology questions into 1-3 themes.\n"
-                f"Available themes: {json.dumps(theme_labels)}\n\n"
-                f"Questions:\n"
-                + "\n".join(f"  - {q}" for q in questions)
-                + "\n\nRespond with ONLY a JSON array of theme keys, e.g. [\"career\", \"relationship\"]."
-            )
-
-            result = gateway.generate(
-                system_prompt="You classify questions into predefined themes. Respond with only a JSON array.",
-                user_prompt=prompt,
-                model="gemini-2.5-flash-lite",
-                max_tokens=100,
-                temperature=0.0,
-            )
-
-            if not result.get("success"):
-                return []
-
-            raw = result.get("content", "").strip()
-            # Parse the JSON array
-            if raw.startswith("["):
-                themes = json.loads(raw)
-                return [t for t in themes if t in THEMES]
-            return []
-
-        except Exception as e:
-            logger.debug(f"LLM theme classification fallback failed: {e}")
-            return []
+        return {"themes": themes, "target_houses": houses}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Steering block builder

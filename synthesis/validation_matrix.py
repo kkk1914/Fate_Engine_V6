@@ -82,13 +82,21 @@ class ValidationMatrix:
     def _probabilistic_confidence(events: List[PredictionEvent]) -> float:
         """P(at least one correct) = 1 - ∏(1 - P(event_i)).
 
-        Assumes independence between systems/techniques. Naturally rewards
-        multi-system convergence without an arbitrary system bonus.
+        Tier Ceiling: if no event has base weight >= 0.75, the final
+        score is capped at 0.74. This prevents minor techniques from
+        mathematically outranking Gold Standard techniques.
         """
         product_complement = 1.0
         for e in events:
             product_complement *= (1.0 - e.confidence)
-        return round(1.0 - product_complement, 4)
+        raw = 1.0 - product_complement
+
+        # Tier ceiling: require at least one high-authority technique
+        has_high_authority = any(e.confidence >= 0.75 for e in events)
+        if not has_high_authority:
+            raw = min(raw, 0.74)
+
+        return round(raw, 4)
 
     def add_prediction(self, event: PredictionEvent):
         """Add prediction from any system.

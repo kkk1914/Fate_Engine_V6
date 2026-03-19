@@ -1886,16 +1886,23 @@ class QuestionRouter:
                               temporal_clusters: list,
                               ref: dict,
                               question_num: int,
-                              validation_matrix=None) -> str:
+                              validation_matrix=None,
+                              target_houses: list = None) -> str:
         """
         Build a tailored, future-filtered evidence block for a single question.
         Three-tier architecture: Universal → House-based → Timing.
+
+        target_houses: Pre-detected house numbers from QueryEngine's structured
+          LLM call.  Merged with keyword-detected houses to ensure no topic is
+          missed due to misspelled keywords.
         """
         w_nat = chart_data.get("western", {}).get("natal", {})
         v_nat = chart_data.get("vedic",   {}).get("natal", {})
 
-        # Detect relevant houses from question text
+        # Detect relevant houses from question text, merge with pre-detected
         relevant_houses  = self._detect_houses(question)
+        if target_houses:
+            relevant_houses = sorted(set(relevant_houses) | set(target_houses))
         # Collect all significator planets for those houses
         relevant_planets = list({
             planet
@@ -2097,6 +2104,71 @@ class Archon:
         # Verdict ledger: binding constraints from the Arbiter
         self._verdict_ledger_block: str = ""
 
+    def _generate_single_section(
+        self, sec_num: int, sd: dict, arbiter_synthesis: dict,
+        chart_data: dict, ref: dict, cluster_block: str,
+        temporal_clusters: list, clean_questions: list,
+        query_context: dict, expert_block: str,
+        wealth_block: str, wealth_score: float,
+        citation_registry: dict, expert_analyses: list,
+    ) -> Optional[str]:
+        """Generate a single section (evidence plan → prose → validation).
+
+        Thread-safe: reads only from immutable inputs (ref, chart_data,
+        arbiter_synthesis) and stateless validators. Section memory is
+        NOT updated here — caller handles that after all futures complete.
+        """
+        prompt = self._build_section_prompt(
+            sec_num, sd, arbiter_synthesis, chart_data, ref,
+            cluster_block, temporal_clusters_raw=temporal_clusters or [],
+            user_questions=clean_questions if sd["id"] == "questions" else None,
+            wealth_block=wealth_block if sd["id"] == "material_world" else None,
+            wealth_score=wealth_score if sd["id"] in ("material_world", "directive", "questions") else None,
+            query_context=query_context,
+            expert_block=expert_block,
+        )
+        sys_prompt = self._get_system_prompt(sd)
+
+        # Two-pass evidence-validated generation
+        evidence_plan = self._generate_evidence_plan(
+            prompt, sd, citation_registry)
+        if evidence_plan:
+            validated_plan = self._validate_evidence_plan(
+                evidence_plan, citation_registry)
+            prose_prompt = self._build_prose_from_plan(
+                prompt, validated_plan, sd)
+        else:
+            prose_prompt = prompt  # graceful degradation
+
+        response = gateway.generate(
+            system_prompt=sys_prompt,
+            user_prompt=prose_prompt,
+            model=self.MODEL_MAP.get(sd["type"], settings.archon_model),
+            max_tokens=self.MAX_TOKENS_MAP.get(sd["type"], 5000),
+            temperature=self.TEMP_MAP.get(sd["type"], 0.0),
+            reasoning_effort=(
+                "high" if sd.get("id") == "questions"
+                else "medium" if sd.get("type") in ("year_forecast", "almanac_summary")
+                else self.ARCHON_REASONING_EFFORT
+            ),
+        )
+
+        if response.get("success"):
+            content = response["content"]
+            content = self._enforce_section_header(content, sd)
+            content = self._validate_degrees_internal(content, ref, sec_num)
+            content = self._post_validator.validate_section(content, sec_num)
+            content = self._audit_banned_words(content, sec_num)
+            content = self._audit_past_dates(content, sec_num)
+            content = self._validate_citations(content, citation_registry)
+            if expert_analyses:
+                content = self._validate_consensus_claims(content, expert_analyses)
+            return content
+        else:
+            err = response.get("error", "Unknown error")
+            logger.error(f"Section {sec_num} ({sd['id']}) failed: {err}")
+            return f"\n\n# {sd['header']}\n\n**[Generation Failed: {err}]**\n\n"
+
     def generate_report(self,
                         arbiter_synthesis: dict,
                         chart_data: dict,
@@ -2158,6 +2230,7 @@ class Archon:
         self._section_memory = []
         self._hard_rules = []
         self._validation_matrix = validation_matrix
+        self._query_context = query_context
 
         # Initialize universal post-generation validator
         self._post_validator = PostValidator(chart_data)
@@ -2175,108 +2248,108 @@ class Archon:
             active_parts.discard("III")
         print(f"   [Archon] Active parts: {sorted(active_parts)}")
 
-        for sec_num in sorted(SECTION_DEFS.keys()):
-            sd = SECTION_DEFS[sec_num]
+        # ── Batched Parallel Section Generation ──────────────────────────
+        # Sections within a Part are thematically independent and can run
+        # in parallel. Between Parts, _section_memory must synchronize.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            # Skip parts not in active_parts
-            if sd["part"] not in active_parts:
-                continue
+        PART_ORDER = ["I", "II", "III", "IV"]
 
-            # Skip questions section if no questions provided
-            if sd["id"] == "questions" and not clean_questions:
-                continue
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            for part in PART_ORDER:
+                if part not in active_parts:
+                    continue
 
-            print(f"   [Archon] Generating section {sec_num + 1}/{total}: {sd['title']}...")
+                # Collect sections for this part
+                part_sections = [
+                    (n, SECTION_DEFS[n]) for n in sorted(SECTION_DEFS.keys())
+                    if SECTION_DEFS[n]["part"] == part
+                    and not (SECTION_DEFS[n]["id"] == "questions" and not clean_questions)
+                ]
 
-            # ── Questions section: use per-question QA pipeline (Audit 5) ──
-            if sd["id"] == "questions" and clean_questions:
-                try:
-                    content = self._generate_questions_via_pipeline(
-                        questions=clean_questions,
-                        chart_data=chart_data,
-                        ref=ref,
-                        temporal_clusters=temporal_clusters or [],
-                        citation_registry=citation_registry,
-                        verdict_ledger_block=self._verdict_ledger_block,
+                if not part_sections:
+                    continue
+
+                # Part IV (questions) always sequential — needs hard rules from Part III
+                if part == "IV":
+                    for sec_num, sd in part_sections:
+                        print(f"   [Archon] Generating section {sec_num + 1}/{total}: {sd['title']}...")
+                        if sd["id"] == "questions" and clean_questions:
+                            try:
+                                content = self._generate_questions_via_pipeline(
+                                    questions=clean_questions,
+                                    chart_data=chart_data,
+                                    ref=ref,
+                                    temporal_clusters=temporal_clusters or [],
+                                    citation_registry=citation_registry,
+                                    verdict_ledger_block=self._verdict_ledger_block,
+                                )
+                                content = self._validate_degrees_internal(content, ref, sec_num)
+                                content = self._post_validator.validate_section(content, sec_num, is_qa=True)
+                                content = self._audit_banned_words(content, sec_num)
+                                content = self._audit_past_dates(content, sec_num)
+                                content = self._validate_citations(content, citation_registry)
+                                if expert_analyses:
+                                    content = self._validate_consensus_claims(content, expert_analyses)
+                                sections.append(content)
+                                self._extract_section_predictions(sd, content)
+                                continue
+                            except Exception as e:
+                                logger.error(f"QA pipeline failed, falling back to monolithic: {e}")
+                                sd["_pipeline_failed"] = True
+
+                        # Monolithic fallback for questions or non-question Part IV sections
+                        result_content = self._generate_single_section(
+                            sec_num, sd, arbiter_synthesis, chart_data, ref,
+                            cluster_block, temporal_clusters, clean_questions,
+                            query_context, expert_block, wealth_block, wealth_score,
+                            citation_registry, expert_analyses,
+                        )
+                        if result_content:
+                            sections.append(result_content)
+                    print(f"   [Archon] Part {part} complete ({len(part_sections)} sections)")
+                    continue
+
+                # Submit all sections in this part in parallel
+                futures = {}
+                for sec_num, sd in part_sections:
+                    print(f"   [Archon] Submitting section {sec_num + 1}/{total}: {sd['title']}...")
+                    fut = executor.submit(
+                        self._generate_single_section,
+                        sec_num, sd, arbiter_synthesis, chart_data, ref,
+                        cluster_block, temporal_clusters, clean_questions,
+                        query_context, expert_block, wealth_block, wealth_score,
+                        citation_registry, expert_analyses,
                     )
-                    content = self._validate_degrees_internal(content, ref, sec_num)
-                    content = self._post_validator.validate_section(content, sec_num, is_qa=True)
-                    content = self._audit_banned_words(content, sec_num)
-                    content = self._audit_past_dates(content, sec_num)
-                    content = self._validate_citations(content, citation_registry)
-                    if expert_analyses:
-                        content = self._validate_consensus_claims(content, expert_analyses)
-                    sections.append(content)
-                except Exception as e:
-                    logger.error(f"QA pipeline failed, falling back to monolithic: {e}")
-                    # Fall through to monolithic generation below
-                    sd["_pipeline_failed"] = True
-                else:
-                    continue  # Pipeline succeeded, skip monolithic path
+                    futures[fut] = (sec_num, sd)
 
-            prompt = self._build_section_prompt(
-                sec_num, sd, arbiter_synthesis, chart_data, ref,
-                cluster_block, temporal_clusters_raw=temporal_clusters or [],
-                user_questions=clean_questions if sd["id"] == "questions" else None,
-                wealth_block=wealth_block if sd["id"] == "material_world" else None,
-                wealth_score=wealth_score if sd["id"] in ("material_world", "directive", "questions") else None,
-                query_context=query_context,
-                expert_block=expert_block,  # Issue 3
-            )
-            sys_prompt = self._get_system_prompt(sd)
+                # Collect results in section order
+                part_results = {}
+                for fut in as_completed(futures):
+                    sec_num, sd = futures[fut]
+                    try:
+                        content = fut.result()
+                        part_results[sec_num] = (sd, content)
+                    except Exception as e:
+                        logger.error(f"Section {sec_num} ({sd['id']}) parallel gen failed: {e}")
+                        part_results[sec_num] = (
+                            sd, f"\n\n# {sd['header']}\n\n**[Generation Failed: {e}]**\n\n"
+                        )
 
-            # ── Two-pass evidence-validated generation ──────────────────
-            evidence_plan = self._generate_evidence_plan(
-                prompt, sd, citation_registry)
-            if evidence_plan:
-                validated_plan = self._validate_evidence_plan(
-                    evidence_plan, citation_registry)
-                prose_prompt = self._build_prose_from_plan(
-                    prompt, validated_plan, sd)
-            else:
-                prose_prompt = prompt  # graceful degradation
+                # Append in order and update section memory
+                for sec_num in sorted(part_results.keys()):
+                    sd, content = part_results[sec_num]
+                    if content:
+                        sections.append(content)
+                        self._extract_section_predictions(sd, content)
+                        if sd.get("id") == "directive":
+                            self._extract_hard_rules(content)
+                        if sd.get("type") == "year_forecast":
+                            year_key = str(sd.get("target_year", ""))
+                            if year_key:
+                                self._almanac_cache[year_key] = content[:2000]
 
-            response = gateway.generate(
-                system_prompt    = sys_prompt,
-                user_prompt      = prose_prompt,
-                model            = self.MODEL_MAP.get(sd["type"], settings.archon_model),
-                max_tokens       = self.MAX_TOKENS_MAP.get(sd["type"], 5000),
-                temperature      = self.TEMP_MAP.get(sd["type"], 0.0),
-                # Questions: high reasoning. Year forecasts + almanac: medium (cross-reference dates).
-                reasoning_effort = (
-                    "high" if sd.get("id") == "questions"
-                    else "medium" if sd.get("type") in ("year_forecast", "almanac_summary")
-                    else self.ARCHON_REASONING_EFFORT
-                ),
-            )
-
-            if response.get("success"):
-                content = response["content"]
-                content = self._enforce_section_header(content, sd)
-                content = self._validate_degrees_internal(content, ref, sec_num)
-                content = self._post_validator.validate_section(content, sec_num)
-                content = self._audit_banned_words(content, sec_num)
-                content = self._audit_past_dates(content, sec_num)
-                content = self._validate_citations(content, citation_registry)
-                if expert_analyses:
-                    content = self._validate_consensus_claims(content, expert_analyses)
-                # Issue 5: cache year chapters so Q&A can reference them
-                if sd.get("type") == "year_forecast":
-                    year_key = str(sd.get("target_year", ""))
-                    if year_key:
-                        self._almanac_cache[year_key] = content[:2000]
-                # Cross-section memory: extract key predictions for consistency
-                self._extract_section_predictions(sd, content)
-                # After Directive section: extract hard rules for Q&A enforcement
-                if sd.get("id") == "directive":
-                    self._extract_hard_rules(content)
-                sections.append(content)
-            else:
-                err = response.get("error", "Unknown error")
-                sections.append(
-                    f"\n\n# {sd['header']}\n\n**[Generation Failed: {err}]**\n\n"
-                )
-                logger.error(f"Section {sec_num} ({sd['id']}) failed: {err}")
+                print(f"   [Archon] Part {part} complete ({len(part_results)} sections)")
 
         # ── Assemble English report ────────────────────────────────────────
         generated_sec_nums = [
@@ -2535,6 +2608,12 @@ ABSOLUTE RULES (apply to ALL sections):
             # Build evidence block for each question individually
             evidence_blocks = []
             for i, q in enumerate(user_questions, 1):
+                # Pass target_houses from query_context so evidence block
+                # covers all relevant houses without keyword guessing
+                _target_houses = (
+                    query_context.get("target_houses", [])
+                    if query_context else []
+                )
                 eb = router.build_evidence_block(
                     question=q,
                     chart_data=chart_data,
@@ -2542,6 +2621,7 @@ ABSOLUTE RULES (apply to ALL sections):
                     ref=ref,
                     question_num=i,
                     validation_matrix=self._validation_matrix,
+                    target_houses=_target_houses,
                 )
                 evidence_blocks.append(eb)
 
@@ -4357,7 +4437,14 @@ ABSOLUTE RULES (apply to ALL sections):
             sun_sign  = ref.get("Sun",       {}).get("sign", "") if isinstance(ref.get("Sun"), dict) else ""
             moon_sign = ref.get("Moon",      {}).get("sign", "") if isinstance(ref.get("Moon"), dict) else ""
             asc_sign  = ref.get("Ascendant", {}).get("sign", "") if isinstance(ref.get("Ascendant"), dict) else ""
-        sig = f"{sun_sign} Sun · {moon_sign} Moon · {asc_sign} Ascendant" if all([sun_sign, moon_sign, asc_sign]) else ""
+        if all([sun_sign, moon_sign, asc_sign]):
+            sig = f"{sun_sign} Sun · {moon_sign} Moon · {asc_sign} Ascendant"
+        elif sun_sign and moon_sign:
+            sig = f"{sun_sign} Sun · {moon_sign} Moon · Time Unknown"
+        elif sun_sign:
+            sig = f"{sun_sign} Sun · Time Unknown"
+        else:
+            sig = ""
 
         time_known = chart_data.get("meta", {}).get("time_known", True) if chart_data else True
         time_note  = "" if time_known else "\n> ⚠️ **Birth time unknown** — house-sensitive techniques (Ascendant, house lords, Parans, ZR) are suppressed. All planet-based calculations remain active.\n"
@@ -4840,6 +4927,10 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
         evidence_blocks = {}
         domain_contexts = {}
         for i, q in enumerate(questions):
+            _target_houses = (
+                self._query_context.get("target_houses", [])
+                if self._query_context else []
+            )
             evidence_blocks[i] = router.build_evidence_block(
                 question=q,
                 chart_data=chart_data,
@@ -4847,6 +4938,7 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
                 ref=ref,
                 question_num=i + 1,
                 validation_matrix=self._validation_matrix,
+                target_houses=_target_houses,
             )
             domain_contexts[i] = self._match_domain_context(q, domain_kb)
 
