@@ -80,6 +80,9 @@ class LLMGateway:
                             model: str = "gemini-2.5-flash-lite",
                             max_tokens: int = 4000,
                             temperature: float = 0.7,
+                            # seed=42: Fixed seed for full determinism across all report sections.
+                            # Variation between reports comes from different prompts/evidence, not seed.
+                            # ensemble_generate() uses seed+7 for deliberate creative diversity.
                             seed: int = 42,
                             **kwargs) -> Dict[str, Any]:
         """Generate structured JSON output matching output_schema."""
@@ -168,6 +171,9 @@ class LLMGateway:
                  model: str = "gemini-2.5-flash-lite",
                  max_tokens: int = 2000,
                  temperature: float = 0.7,
+                 # seed=42: Fixed seed for full determinism across all report sections.
+                 # Variation between reports comes from different prompts/evidence, not seed.
+                 # ensemble_generate() uses seed+7 for deliberate creative diversity.
                  seed: int = 42,
                  **kwargs) -> Dict[str, Any]:
         """Free-text generation with retry on quota/rate errors."""

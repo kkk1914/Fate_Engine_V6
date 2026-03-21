@@ -244,7 +244,24 @@ class QAPipeline:
                         "systems_converging": {"type": "integer", "description": "How many systems agree"},
                         "techniques": {"type": "array", "items": {"type": "string"}},
                         "strength_reason": {"type": "string", "description": "WHY this window is strong/weak structurally"},
-                        "convergence_score": {"type": "number", "description": "0.0-1.0 from evidence block if available"}
+                        "convergence_score": {"type": "number", "description": "0.0-1.0 from evidence block if available"},
+                        "window_type": {
+                            "type": "string",
+                            "enum": ["GOLDEN_OPPORTUNITY", "MAINTENANCE_WINDOW", "CAUTION_PERIOD"],
+                            "description": (
+                                "GOLDEN_OPPORTUNITY: 3+ systems converge with at least one Gold Standard "
+                                "technique (Primary Direction, Vimshottari Dasha, Solar Return). "
+                                "MAINTENANCE_WINDOW: 2 systems converge, moderate-authority techniques. "
+                                "CAUTION_PERIOD: Malefic-heavy or contradictory signals."
+                            )
+                        },
+                        "outrank_reason": {
+                            "type": "string",
+                            "description": (
+                                "WHY this window outranks or underranks alternatives. "
+                                "Must cite specific technique differences."
+                            )
+                        }
                     }
                 }
             },
@@ -310,6 +327,17 @@ RULES:
    Example: "Primary window: Oct 2026–Jan 2027 (4 systems). Secondary: Q3 2030 (3 systems)."
 2. timing_windows: List ALL viable windows ranked by structural strength (not by date).
    Include convergence score, number of systems, and specific techniques for each.
+2b. window_type: Classify EVERY window:
+   - GOLDEN_OPPORTUNITY: 3+ systems converge AND includes at least one Gold Standard
+     technique (Primary Direction, Vimshottari Dasha, Solar Return). This is the window
+     to ACT — peak activation, strongest structural support.
+   - MAINTENANCE_WINDOW: 2 systems converge with moderate-authority techniques. Good for
+     preparation, skill-building, positioning — but not peak activation. Window to PREPARE.
+   - CAUTION_PERIOD: Malefic dominance (Saturn, Mars, Rahu/Ketu), hard aspects (square,
+     opposition), or contradictory signals between systems. Window to be AWARE.
+2c. outrank_reason: For EVERY window, explain WHY it ranks where it does compared to
+   alternatives. Cite specific technique authority differences (e.g., "outranks Window 2
+   because Primary Direction [Gold Standard] vs. only Transit [Moderate]").
 3. confidence: Based on convergence data. NEAR-CERTAIN only if score >= 0.85 AND 3+ systems.
 4. supporting_evidence: Name specific techniques, planets, dates. Include technique authority
    (Gold Standard = Primary Direction/Vimshottari/Solar Return, High = Profection/Solar Arc,
@@ -362,6 +390,19 @@ REQUIRED ELEMENTS (weave these in naturally, do not use rigid subheadings for ev
 When comparing timing windows, use natural language: "The 2030 window carries more weight
 because four independent systems converge — including a primary direction, which is the
 gold-standard technique for life-altering events."
+
+When describing window types, use these natural frames:
+- GOLDEN_OPPORTUNITY: "This is the window to act — [N] independent systems converge
+  including [Gold Standard technique], which carries the highest traditional authority
+  for shifts of this magnitude..."
+- MAINTENANCE_WINDOW: "This period is better suited for preparation and positioning —
+  while [techniques] show activation, the structural support falls short of the
+  convergence seen in [primary window]..."
+- CAUTION_PERIOD: "The chart flags this period for heightened awareness — [malefic planet]
+  dominates with [hard aspect], and the systems send mixed signals about..."
+
+You MUST explicitly state why the top-ranked window is the "Golden Opportunity" compared
+to lower-ranked windows based on the specific techniques involved, not just system count.
 
 ---
 
@@ -536,15 +577,6 @@ CRITICAL: All dates must be AFTER {today}. Do not cite past dates."""
 
         if narrate_response.get("success"):
             answer = narrate_response["content"]
-
-            # Post-generation verification (iteration 2 if needed)
-            final_check = self.claim_extractor.extract_and_verify(answer)
-            if not final_check["passed"] and final_check["n_errors"] <= 3:
-                # Apply programmatic fixes for degree mismatches
-                for err in final_check["errors"]:
-                    if err["type"] == "degree_mismatch":
-                        answer = answer.replace(err["claimed"], err["actual"])
-                logger.info(f"QAPipeline applied {final_check['n_errors']} programmatic fixes")
 
             return answer
         else:

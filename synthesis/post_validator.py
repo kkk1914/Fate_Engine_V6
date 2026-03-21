@@ -122,94 +122,6 @@ class SystemMixingDetector:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. ZR Framing Validator
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ZRFramingValidator:
-    """Detects and corrects acute-trigger framing of Zodiacal Releasing.
-
-    ZR defines thematic life chapters lasting months to years.
-    The LLM must never frame it as a daily event trigger.
-    """
-
-    # Acute trigger phrases that should never co-occur with ZR
-    TRIGGER_PHRASES = re.compile(
-        r'(?:activat\w+\s+(?:for\s+you\s+)?on\s+'
-        r'|fires?\s+on\s+'
-        r'|triggers?\s+on\s+'
-        r'|kicks?\s+in\s+on\s+'
-        r'|hits?\s+on\s+'
-        r'|switches?\s+on\s+'
-        r'|key\s+turn\w+\s+in\s+a\s+lock'
-        r'|alarm\s+clock'
-        r'|switch\s+flips?'
-        r'|mechanism\s+fires?'
-        r'|mechanism\s+activat\w+'
-        r'|astrological\s+equivalent\s+of\s+a\s+key'
-        r'|ignites?\s+on\s+)',
-        re.IGNORECASE,
-    )
-
-    # ZR-specific metaphors that are ALWAYS wrong regardless of context
-    ZR_EXCLUSIVE_METAPHORS = re.compile(
-        r'(?:key\s+turn\w+\s+in\s+a\s+lock'
-        r'|astrological\s+equivalent\s+of\s+a\s+key'
-        r'|alarm\s+clock\s+(?:for|of)\s+\w+'
-        r'|the\s+mechanism\s+activat\w+\s+(?:for\s+you\s+)?on\s+)',
-        re.IGNORECASE,
-    )
-
-    # ZR mention pattern
-    ZR_MENTION = re.compile(
-        r'\b(?:zodiacal\s+releas\w+|ZR)\b',
-        re.IGNORECASE,
-    )
-
-    def validate_and_fix(self, content: str, sec_num: int = -1) -> str:
-        """Find ZR + acute trigger co-occurrences and replace with thematic framing."""
-        corrections = 0
-
-        # Split into sentences for targeted replacement
-        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', content)
-        fixed_sentences = []
-
-        for sent in sentences:
-            has_zr = bool(self.ZR_MENTION.search(sent))
-            has_trigger = bool(self.TRIGGER_PHRASES.search(sent))
-            has_exclusive = bool(self.ZR_EXCLUSIVE_METAPHORS.search(sent))
-
-            if has_exclusive or (has_zr and has_trigger):
-                replacement = re.sub(
-                    self.TRIGGER_PHRASES,
-                    "shifts its thematic emphasis around ",
-                    sent,
-                    count=1,
-                )
-                replacement = re.sub(
-                    r'(?:the\s+)?(?:astrological\s+)?equivalent\s+of\s+a\s+'
-                    r'(?:key\s+turning\s+in\s+a\s+lock|alarm\s+clock|'
-                    r'switch\s+flipping)',
-                    "a gradual thematic transition",
-                    replacement,
-                    flags=re.IGNORECASE,
-                )
-                fixed_sentences.append(replacement)
-                corrections += 1
-                logger.info(
-                    f"Sec{sec_num} ZR FRAMING FIX: replaced acute trigger → "
-                    f"thematic framing in: {sent[:80]}..."
-                )
-            else:
-                fixed_sentences.append(sent)
-
-        if corrections:
-            logger.info(
-                f"Sec{sec_num}: corrected {corrections} ZR acute-trigger framing(s)"
-            )
-        return " ".join(fixed_sentences)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # 3. Hard Rule Enforcer
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -311,14 +223,12 @@ class PostValidator:
 
     def __init__(self, chart_data: Dict, hard_rules: Optional[List[Dict]] = None):
         self.mixing_detector = SystemMixingDetector(chart_data)
-        self.zr_validator = ZRFramingValidator()
         self.hard_rule_enforcer = HardRuleEnforcer(hard_rules or [])
 
     def validate_section(self, content: str, sec_num: int = -1,
                          is_qa: bool = False) -> str:
         """Run all applicable validators on a section's content."""
         content = self.mixing_detector.validate_and_fix(content, sec_num)
-        content = self.zr_validator.validate_and_fix(content, sec_num)
 
         if is_qa:
             content = self.hard_rule_enforcer.validate_and_fix(content, sec_num)

@@ -394,7 +394,8 @@ class TestQueryTemporalClusters:
         assert results == [], f"Non-matching keywords should return empty, got {len(results)}"
 
     def test_uses_probabilistic_confidence(self):
-        """Returned combined_confidence should use the probabilistic formula."""
+        """Returned combined_confidence should use the probabilistic formula
+        with domain-specific bonuses applied."""
         vm = ValidationMatrix()
         vm.add_prediction(_make_event(
             "Western", "Primary Direction", "2027-03-01", "2027-03-20",
@@ -407,9 +408,10 @@ class TestQueryTemporalClusters:
         results = vm.query_temporal_clusters(["Career"])
         assert len(results) >= 1
         conf = results[0]["combined_confidence"]
-        # PD=0.95, Dasha=0.92 → 1-(0.05*0.08) = 0.996
-        assert abs(conf - 0.996) < 0.001, (
-            f"Expected probabilistic ~0.996, got {conf}"
+        # With Career bonus: PD=0.95 (no Career bonus), Dasha=0.92+0.10=1.0 (capped)
+        # → 1 - (0.05 * 0.0) = 1.0
+        assert abs(conf - 1.0) < 0.001, (
+            f"Expected ~1.0 with Career domain bonus on Dasha, got {conf}"
         )
 
 
@@ -472,3 +474,153 @@ class TestTierCeiling:
         ))
         conf_uncapped = ValidationMatrix._probabilistic_confidence(vm.events)
         assert conf_uncapped > 0.74, f"Should be uncapped with Solar Arc, got {conf_uncapped}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Content-based deduplication
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestContentDeduplication:
+    """Verify deduplication uses content equality, not object identity."""
+
+    def test_identical_events_as_separate_objects(self):
+        """Two PredictionEvent objects with identical fields should deduplicate."""
+        vm = ValidationMatrix()
+        # Create two separate objects with identical content
+        for _ in range(2):
+            vm.add_prediction(_make_event(
+                "Western", "Transit", "2027-06-01", "2027-06-20",
+                "Career", 10, ["Saturn"],
+            ))
+        # Add a cross-system event to form a convergence
+        vm.add_prediction(_make_event(
+            "Vedic", "Vimshottari Dasha", "2027-06-05", "2027-06-25",
+            "Career", 10, ["Saturn"],
+        ))
+        convergences = vm.find_convergences()
+        # Should not produce duplicate convergences
+        assert len(convergences) == 1, (
+            f"Expected 1 convergence after dedup, got {len(convergences)}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Domain-specific technique bonuses
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestDomainBonuses:
+    """Verify that query_temporal_clusters applies domain-specific weight
+    bonuses to tradition-appropriate techniques."""
+
+    def test_vedic_career_bonus_raises_confidence(self):
+        """Vimshottari Dasha (base 0.92) + Career bonus (0.10) = 1.0 (capped).
+        Combined with Transit (0.65, no bonus) should give higher confidence
+        than without bonus."""
+        vm = ValidationMatrix()
+        vm.add_prediction(_make_event(
+            "Vedic", "Vimshottari Dasha", "2027-03-05", "2027-03-25",
+            "Career", 10, ["Saturn"],
+        ))
+        vm.add_prediction(_make_event(
+            "Western", "Transit", "2027-03-01", "2027-03-20",
+            "Career", 10, ["Saturn"],
+        ))
+        # Via find_convergences (no domain bonus)
+        base = vm.find_convergences()
+        assert len(base) >= 1
+        base_conf = base[0]["combined_confidence"]
+
+        # Via query_temporal_clusters (with Career domain bonus)
+        results = vm.query_temporal_clusters(["Career"])
+        assert len(results) >= 1
+        domain_conf = results[0]["combined_confidence"]
+        assert domain_conf > base_conf, (
+            f"Career domain bonus should increase confidence: {domain_conf} vs {base_conf}"
+        )
+
+    def test_no_bonus_for_irrelevant_technique(self):
+        """Transit has no Career bonus — confidence should equal base."""
+        vm = ValidationMatrix()
+        vm.add_prediction(_make_event(
+            "Western", "Transit", "2027-03-01", "2027-03-20",
+            "Career", 10, ["Saturn"],
+        ))
+        vm.add_prediction(_make_event(
+            "Saju", "Da Yun", "2027-03-05", "2027-03-25",
+            "Career", 10, ["Saturn"],
+        ))
+        # Da Yun has no Career bonus, Transit has no Career bonus
+        base = vm.find_convergences()
+        results = vm.query_temporal_clusters(["Career"])
+        assert len(base) >= 1 and len(results) >= 1
+        # Da Yun has no Career bonus → same as base
+        assert base[0]["combined_confidence"] == results[0]["combined_confidence"], (
+            "Techniques without Career bonuses should have identical confidence"
+        )
+
+    def test_tier_ceiling_with_domain_bonus(self):
+        """Shadbala (base 0.72) + Career bonus (0.10) = 0.82, which clears
+        the 0.75 tier ceiling threshold."""
+        vm = ValidationMatrix()
+        vm.add_prediction(_make_event(
+            "Vedic", "Shadbala", "2027-05-01", "2027-05-20",
+            "Career", 10, ["Saturn"],
+        ))
+        vm.add_prediction(_make_event(
+            "Western", "Transit", "2027-05-05", "2027-05-25",
+            "Career", 10, ["Saturn"],
+        ))
+        # Base: Shadbala=0.72, Transit=0.65 → both < 0.75, capped at 0.74
+        base = vm.find_convergences()
+        assert len(base) >= 1
+        assert base[0]["combined_confidence"] == 0.74, (
+            f"Without bonus, should be capped at 0.74, got {base[0]['combined_confidence']}"
+        )
+
+        # Career query: Shadbala 0.72+0.10=0.82 (>= 0.75), Transit stays 0.65
+        results = vm.query_temporal_clusters(["Career"])
+        assert len(results) >= 1
+        assert results[0]["combined_confidence"] > 0.74, (
+            f"Domain bonus should uncap Shadbala past tier ceiling, got {results[0]['combined_confidence']}"
+        )
+
+    def test_original_events_not_mutated(self):
+        """query_temporal_clusters must not modify original event confidences."""
+        vm = ValidationMatrix()
+        vm.add_prediction(_make_event(
+            "Vedic", "Vimshottari Dasha", "2027-03-05", "2027-03-25",
+            "Career", 10, ["Saturn"],
+        ))
+        vm.add_prediction(_make_event(
+            "Western", "Primary Direction", "2027-03-01", "2027-03-20",
+            "Career", 10, ["Saturn"],
+        ))
+        # Record original confidences
+        orig_confidences = [e.confidence for e in vm.events]
+
+        # Run domain query (applies bonuses internally)
+        vm.query_temporal_clusters(["Career"])
+
+        # Verify originals unchanged
+        for i, e in enumerate(vm.events):
+            assert e.confidence == orig_confidences[i], (
+                f"Event {i} confidence mutated: {e.confidence} vs {orig_confidences[i]}"
+            )
+
+    def test_identity_domain_bonus(self):
+        """Primary Direction should get bonus for Identity domain."""
+        vm = ValidationMatrix()
+        vm.add_prediction(_make_event(
+            "Western", "Primary Direction", "2027-03-01", "2027-03-20",
+            "Identity", 1, ["Sun"],
+        ))
+        vm.add_prediction(_make_event(
+            "Vedic", "Transit", "2027-03-05", "2027-03-25",
+            "Identity", 1, ["Sun"],
+        ))
+        base = vm.find_convergences()
+        results = vm.query_temporal_clusters(["Identity", "Self", "Personality"])
+        assert len(base) >= 1 and len(results) >= 1
+        assert results[0]["combined_confidence"] >= base[0]["combined_confidence"], (
+            "Primary Direction should get Identity domain bonus"
+        )

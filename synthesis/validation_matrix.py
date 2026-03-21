@@ -1,4 +1,5 @@
 """Cross-system validation matrix."""
+import copy
 from typing import Dict, Any, List, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -98,6 +99,12 @@ class ValidationMatrix:
 
         return round(raw, 4)
 
+    @staticmethod
+    def _event_key(e: 'PredictionEvent') -> tuple:
+        """Content-based identity for deduplication (not memory address)."""
+        return (e.system, e.technique, e.date_range[0].isoformat(),
+                e.date_range[1].isoformat(), e.theme, e.house_involved)
+
     def add_prediction(self, event: PredictionEvent):
         """Add prediction from any system.
 
@@ -160,11 +167,24 @@ class ValidationMatrix:
         seen_events = set()
         deduped = []
         for c in convergences:
-            keys = frozenset(id(e) for e in c["events"])
+            keys = frozenset(self._event_key(e) for e in c["events"])
             if keys not in seen_events:
                 seen_events.add(keys)
                 deduped.append(c)
         return deduped
+
+    def _resolve_domain(self, kw_lower: set) -> str:
+        """Map incoming keywords to the best-matching DOMAIN_GROUPS key."""
+        best_domain, best_overlap = "", 0
+        for domain, houses in self.DOMAIN_GROUPS.items():
+            domain_kws = set()
+            for h in houses:
+                domain_kws.update(t.lower() for t in self.HOUSE_THEMES.get(h, []))
+            overlap = len(kw_lower & domain_kws)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_domain = domain
+        return best_domain
 
     def query_temporal_clusters(
         self,
@@ -176,7 +196,8 @@ class ValidationMatrix:
 
         Maps keywords to relevant houses via HOUSE_THEMES, filters events
         to those matching domain (house or theme), then runs convergence
-        logic on the filtered set. Returns top_n results sorted by
+        logic on the filtered set. Applies domain-specific technique bonuses
+        before convergence scoring. Returns top_n results sorted by
         combined_confidence descending.
         """
         if not domain_keywords:
@@ -203,8 +224,21 @@ class ValidationMatrix:
         if len(filtered) < 2:
             return []
 
-        # Run convergence logic on filtered subset
-        convergences = self._find_convergences_for_events(filtered, tolerance_days)
+        # Apply domain-specific technique bonuses on shallow copies
+        matched_domain = self._resolve_domain(kw_lower)
+        domain_bonuses = self.DOMAIN_TECHNIQUE_BONUSES.get(matched_domain, {})
+        adjusted = []
+        for e in filtered:
+            bonus = domain_bonuses.get(e.technique, 0.0)
+            if bonus:
+                adj = copy.copy(e)
+                adj.confidence = min(1.0, e.confidence + bonus)
+                adjusted.append(adj)
+            else:
+                adjusted.append(e)
+
+        # Run convergence logic on domain-adjusted subset
+        convergences = self._find_convergences_for_events(adjusted, tolerance_days)
 
         # Sort by confidence descending, return top N
         convergences.sort(key=lambda x: x["combined_confidence"], reverse=True)
@@ -263,6 +297,31 @@ class ValidationMatrix:
         "Identity":     {1, 12},
         "Wealth":       {2, 8, 11},
         "Relationship": {5, 7},
+    }
+
+    # Domain-context sensitivity: certain traditions excel in certain life domains.
+    # Bonus is additive to base weight, capped at 1.0.
+    # Vedic techniques are authoritative for Career/Family; Western directions for Identity.
+    DOMAIN_TECHNIQUE_BONUSES: Dict[str, Dict[str, float]] = {
+        "Career": {
+            "Vimshottari Dasha": 0.10, "Tajaka": 0.10,
+            "Kakshya": 0.10, "Shadbala": 0.10,
+        },
+        "Family": {
+            "Vimshottari Dasha": 0.10, "Tajaka": 0.10,
+            "Kakshya": 0.10, "Shadbala": 0.10,
+        },
+        "Identity": {
+            "Primary Direction": 0.10, "Progression": 0.10,
+            "Solar Arc": 0.10,
+        },
+        "Wealth": {
+            "Vimshottari Dasha": 0.08, "Da Yun": 0.08,
+        },
+        "Relationship": {
+            "Vimshottari Dasha": 0.10, "Tajaka": 0.10,
+            "Lunar Return": 0.08, "LUNAR_RETURN": 0.08,
+        },
     }
 
     def _is_thematic_match(self, e1: PredictionEvent, e2: PredictionEvent) -> bool:

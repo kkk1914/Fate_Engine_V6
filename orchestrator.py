@@ -645,118 +645,164 @@ class FatesOrchestrator:
 
         print("   ✓ All 4 base systems calculated")
 
-        # ── WESTERN POST-PROCESSING (sequential — depends on western output) ─
-        # Primary Directions (Gold Standard) — 15-year window, converse included
-        print("   → Computing Primary Directions...")
-        pd_engine = PrimaryDirections(jd, lat, lon)
-        primary_dirs = pd_engine.get_critical_directions(years_ahead=15)
-        western["predictive"]["primary_directions"] = primary_dirs
-
-        print("   → Validating Essential Dignities...")
-        try:
-            dignity_engine = EssentialDignities()
-            is_day = self._is_day_chart(western['natal']['placements'], western['natal']['angles'])
-
-            valid_placements = {
-                p: d for p, d in western['natal']['placements'].items()
-                if isinstance(d, dict) and 'sign' in d and 'degree' in d
-            }
-
-            western['natal']['dignities'] = dignity_engine.calculate_dignities(
-                valid_placements, is_day=is_day
-            )
-            western['natal']['receptions'] = dignity_engine.find_receptions(
-                {p: (d['sign'], d['degree']) for p, d in valid_placements.items()},
-                is_day=is_day
-            )
-            patterns = western.get('natal', {}).get('patterns', {})
-            pattern_summary = patterns.get('summary', {})
-            if pattern_summary.get('dominant_pattern'):
-                print(f"   ✓ Dominant pattern: {pattern_summary['dominant_pattern']} "
-                      f"(tension: {pattern_summary.get('chart_tension', 0)}, "
-                      f"harmony: {pattern_summary.get('chart_harmony', 0)})")
-        except Exception as e:
-            print(f"   ⚠️  Dignity calculation error: {e}")
-            western['natal']['dignities'] = {}
-            western['natal']['receptions'] = {}
-
-        # Lunar Returns (15-year window)
-        print("   → Calculating Lunar Returns (15yr)...")
-        moon_lon = western['natal']['placements']['Moon']['longitude']
-        western['predictive']['lunar_returns'] = self.western_engine.calculate_lunar_returns(
-            jd, moon_lon, years=15
-        )
-
-        # Pre-natal Syzygy (Phase 3)
-        print("   → Calculating Pre-natal Syzygy...")
-        syzygy_engine = SyzygyEngine(jd)
-        western['natal']['syzygy'] = syzygy_engine.calculate_syzygy()
-
-        # Solar Returns — 15-year window
-        sr_engine = SolarReturnEngine(jd, lat, lon)
-        current_year = datetime.now().year
-        solar_returns = sr_engine.get_return_series(current_year, years=15)
-        western["predictive"]["solar_returns"] = solar_returns
-        western["predictive"]["solar_return_analysis"] = [
-            sr_engine.analyze_return_vs_natal(sr) for sr in solar_returns
-        ]
-
-        # ── VEDIC POST-PROCESSING ───────────────────────────────────────────
-        # Kakshya Transit Analysis (Ashtakavarga-driven)
-        print("   → Calculating Kakshya Transit Quality...")
-        try:
-            from systems.kakshya_transit import calculate_kakshya_transits
-            av_full = vedic.get("strength", {}).get("ashtakavarga_full", {})
-            bhinna  = av_full.get("bhinna", {})
-            sarva   = av_full.get("sarva",  [20] * 12)
-            if not bhinna or not isinstance(bhinna, dict):
-                bhinna = {}
-            if not sarva or not isinstance(sarva, list) or len(sarva) != 12:
-                sarva = [20] * 12
-            kakshya_data = calculate_kakshya_transits(
-                natal_jd=jd, lat=lat, lon=lon,
-                bhinna_av=bhinna, sarva_av=sarva, years_ahead=15
-            )
-            vedic["predictive"]["kakshya_transits"] = kakshya_data
-        except Exception as e:
-            print(f"   ⚠️  Kakshya error: {e}")
-            vedic["predictive"]["kakshya_transits"] = {"error": str(e)}
-
-        # ── WESTERN: Fixed Star Parans ──────────────────────────────────────
-        if time_known:
-            print("   → Calculating Fixed Star Parans...")
+        # ── POST-PROCESSING (parallelized by lock affinity) ────────────────
+        # Group 1: Tropical-lock engines (serialize within, parallel with others)
+        # Group 2: Essential Dignities (pure Python, no lock)
+        # Group 3: Kakshya Transit (sidereal lock, parallel with tropical)
+        def _compute_tropical_chain():
+            """All tropical-lock engines in sequence (they'd contend anyway)."""
+            results = {}
             try:
-                from core.fixed_star_parans import calculate_parans
-                parans_data = calculate_parans(jd, lat, lon, time_known=True)
-                western["natal"]["fixed_stars"] = parans_data.get("conjunctions", [])
-                western["natal"]["parans"] = parans_data.get("natal_parans", [])
-                western["natal"]["heliacal_events"] = parans_data.get("heliacal_events", [])
-                western["natal"]["star_windows"] = parans_data.get("five_year_windows", [])
-                western["natal"]["significant_stars"] = parans_data.get("significant_stars", [])
+                # Primary Directions (Gold Standard)
+                print("   → Computing Primary Directions...")
+                pd_engine = PrimaryDirections(jd, lat, lon)
+                results["primary_dirs"] = pd_engine.get_critical_directions(years_ahead=15)
+
+                # Lunar Returns (15-year window)
+                print("   → Calculating Lunar Returns (15yr)...")
+                moon_lon = western['natal']['placements']['Moon']['longitude']
+                results["lunar_returns"] = self.western_engine.calculate_lunar_returns(
+                    jd, moon_lon, years=15
+                )
+
+                # Pre-natal Syzygy (Phase 3)
+                print("   → Calculating Pre-natal Syzygy...")
+                syzygy_engine = SyzygyEngine(jd)
+                results["syzygy"] = syzygy_engine.calculate_syzygy()
+
+                # Solar Returns — 15-year window
+                sr_engine = SolarReturnEngine(jd, lat, lon)
+                current_year = datetime.now().year
+                solar_returns = sr_engine.get_return_series(current_year, years=15)
+                results["solar_returns"] = solar_returns
+                results["solar_return_analysis"] = [
+                    sr_engine.analyze_return_vs_natal(sr) for sr in solar_returns
+                ]
+
+                # Dodecatemoria (12th parts) — also tropical lock
+                print("   → Calculating Dodecatemoria (12th parts)...")
+                try:
+                    dodec_engine = DodecatemoriaEngine()
+                    results["dodecatemoria"] = dodec_engine.calculate(jd, lat, lon, True)
+                except Exception as e:
+                    print(f"   ⚠️  Dodecatemoria error: {e}")
+                    results["dodecatemoria"] = {"error": str(e)}
+
+                # Fixed Star Parans — also tropical lock, conditional
+                if time_known:
+                    print("   → Calculating Fixed Star Parans...")
+                    try:
+                        from core.fixed_star_parans import calculate_parans
+                        parans_data = calculate_parans(jd, lat, lon, time_known=True)
+                        results["parans"] = parans_data
+                    except Exception as e:
+                        print(f"   ⚠️  Parans error: {e}")
+                        results["parans"] = None
+                else:
+                    print("   ℹ️  Skipping Fixed Star Parans (birth time unknown — RAMC required)")
+                    results["parans"] = None
+
             except Exception as e:
-                print(f"   ⚠️  Parans error: {e}")
-                western["natal"].setdefault("fixed_stars", [])
-                western["natal"]["parans"] = []
-                western["natal"]["heliacal_events"] = []
-                western["natal"]["star_windows"] = []
+                logger.error(f"Tropical chain error: {e}")
+                results.setdefault("primary_dirs", [])
+                results.setdefault("lunar_returns", [])
+                results.setdefault("syzygy", {})
+                results.setdefault("solar_returns", [])
+                results.setdefault("solar_return_analysis", [])
+                results.setdefault("dodecatemoria", {"error": str(e)})
+                results.setdefault("parans", None)
+            return results
+
+        def _compute_dignities():
+            """Essential Dignities — pure Python, no ephemeris lock needed."""
+            print("   → Validating Essential Dignities...")
+            try:
+                dignity_engine = EssentialDignities()
+                is_day = self._is_day_chart(western['natal']['placements'], western['natal']['angles'])
+
+                valid_placements = {
+                    p: d for p, d in western['natal']['placements'].items()
+                    if isinstance(d, dict) and 'sign' in d and 'degree' in d
+                }
+
+                dignities = dignity_engine.calculate_dignities(
+                    valid_placements, is_day=is_day
+                )
+                receptions = dignity_engine.find_receptions(
+                    {p: (d['sign'], d['degree']) for p, d in valid_placements.items()},
+                    is_day=is_day
+                )
+                patterns = western.get('natal', {}).get('patterns', {})
+                pattern_summary = patterns.get('summary', {})
+                if pattern_summary.get('dominant_pattern'):
+                    print(f"   ✓ Dominant pattern: {pattern_summary['dominant_pattern']} "
+                          f"(tension: {pattern_summary.get('chart_tension', 0)}, "
+                          f"harmony: {pattern_summary.get('chart_harmony', 0)})")
+                return {"dignities": dignities, "receptions": receptions}
+            except Exception as e:
+                print(f"   ⚠️  Dignity calculation error: {e}")
+                return {"dignities": {}, "receptions": {}}
+
+        def _compute_kakshya():
+            """Kakshya Transit — sidereal lock, parallel with tropical."""
+            print("   → Calculating Kakshya Transit Quality...")
+            try:
+                from systems.kakshya_transit import calculate_kakshya_transits
+                av_full = vedic.get("strength", {}).get("ashtakavarga_full", {})
+                bhinna  = av_full.get("bhinna", {})
+                sarva   = av_full.get("sarva",  [20] * 12)
+                if not bhinna or not isinstance(bhinna, dict):
+                    bhinna = {}
+                if not sarva or not isinstance(sarva, list) or len(sarva) != 12:
+                    sarva = [20] * 12
+                return calculate_kakshya_transits(
+                    natal_jd=jd, lat=lat, lon=lon,
+                    bhinna_av=bhinna, sarva_av=sarva, years_ahead=15
+                )
+            except Exception as e:
+                print(f"   ⚠️  Kakshya error: {e}")
+                return {"error": str(e)}
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_tropical  = pool.submit(_compute_tropical_chain)
+            f_dignities = pool.submit(_compute_dignities)
+            f_kakshya   = pool.submit(_compute_kakshya)
+
+            tropical_results = f_tropical.result()
+            dignity_results  = f_dignities.result()
+            kakshya_data     = f_kakshya.result()
+
+        # Unpack tropical chain results
+        western["predictive"]["primary_directions"] = tropical_results["primary_dirs"]
+        western["predictive"]["lunar_returns"] = tropical_results["lunar_returns"]
+        western["natal"]["syzygy"] = tropical_results["syzygy"]
+        western["predictive"]["solar_returns"] = tropical_results["solar_returns"]
+        western["predictive"]["solar_return_analysis"] = tropical_results["solar_return_analysis"]
+        hellenistic["dodecatemoria"] = tropical_results["dodecatemoria"]
+
+        # Unpack parans
+        parans_data = tropical_results["parans"]
+        if parans_data:
+            western["natal"]["fixed_stars"] = parans_data.get("conjunctions", [])
+            western["natal"]["parans"] = parans_data.get("natal_parans", [])
+            western["natal"]["heliacal_events"] = parans_data.get("heliacal_events", [])
+            western["natal"]["star_windows"] = parans_data.get("five_year_windows", [])
+            western["natal"]["significant_stars"] = parans_data.get("significant_stars", [])
         else:
-            print("   ℹ️  Skipping Fixed Star Parans (birth time unknown — RAMC required)")
             western["natal"].setdefault("fixed_stars", [])
             western["natal"]["parans"] = []
             western["natal"]["heliacal_events"] = []
             western["natal"]["star_windows"] = []
             western["natal"]["significant_stars"] = []
 
-        # ── HELLENISTIC POST-PROCESSING ─────────────────────────────────────
-        print("   → Calculating Dodecatemoria (12th parts)...")
-        try:
-            dodec_engine = DodecatemoriaEngine()
-            hellenistic["dodecatemoria"] = dodec_engine.calculate(jd, lat, lon, True)
-        except Exception as e:
-            print(f"   ⚠️  Dodecatemoria error: {e}")
-            hellenistic["dodecatemoria"] = {"error": str(e)}
+        # Unpack dignities
+        western['natal']['dignities'] = dignity_results["dignities"]
+        western['natal']['receptions'] = dignity_results["receptions"]
 
-        # Cross-system House Lord Validation (Phase 3)
+        # Unpack kakshya
+        vedic["predictive"]["kakshya_transits"] = kakshya_data
+
+        # Cross-system House Lord Validation (pure Python, needs both W+V complete)
         print("   → Validating Cross-System House Lords...")
         mapper = HouseLordMapper()
         lord_validations = mapper.validate_cross_system(
@@ -847,7 +893,7 @@ class FatesOrchestrator:
                 "source": "arbiter_critical_period",
                 "prediction": cp.get("meaning", cp.get("action", "")),
                 "date_range": cp.get("period", ""),
-                "confidence": cp.get("intensity", 0),
+                "confidence": cp.get("confidence", cp.get("combined_confidence", 0)),
                 "systems": cp.get("systems_agreeing", []),
                 "evidence": cp.get("meaning", ""),
             })

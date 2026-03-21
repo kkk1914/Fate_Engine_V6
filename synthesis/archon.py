@@ -2134,7 +2134,7 @@ class Archon:
             prompt, sd, citation_registry)
         if evidence_plan:
             validated_plan = self._validate_evidence_plan(
-                evidence_plan, citation_registry)
+                evidence_plan, citation_registry, ref=ref)
             prose_prompt = self._build_prose_from_plan(
                 prompt, validated_plan, sd)
         else:
@@ -2156,9 +2156,7 @@ class Archon:
         if response.get("success"):
             content = response["content"]
             content = self._enforce_section_header(content, sd)
-            content = self._validate_degrees_internal(content, ref, sec_num)
             content = self._post_validator.validate_section(content, sec_num)
-            content = self._audit_banned_words(content, sec_num)
             content = self._audit_past_dates(content, sec_num)
             content = self._validate_citations(content, citation_registry)
             if expert_analyses:
@@ -2284,9 +2282,7 @@ class Archon:
                                     citation_registry=citation_registry,
                                     verdict_ledger_block=self._verdict_ledger_block,
                                 )
-                                content = self._validate_degrees_internal(content, ref, sec_num)
                                 content = self._post_validator.validate_section(content, sec_num, is_qa=True)
-                                content = self._audit_banned_words(content, sec_num)
                                 content = self._audit_past_dates(content, sec_num)
                                 content = self._validate_citations(content, citation_registry)
                                 if expert_analyses:
@@ -2472,6 +2468,19 @@ ABSOLUTE RULES (apply to ALL sections):
    NEVER cross-apply: e.g., do not say "Jupiter conjunct Sun activates the
    5th house lord" if the house lord comes from the wrong zodiac system.
    When systems agree on an outcome through DIFFERENT mechanisms, state both.
+8. BANNED WORDS (never use these in any section):
+   journey, tapestry, dance, weave, cosmic, realm, vibration, manifest,
+   manifestation, universe, perhaps, maybe, might suggest, intricate,
+   multifaceted, dynamic interplay, embody, explore, trust yourself,
+   remember that, you deserve, nurture, this is not speculation.
+   Use instead: path, structure, outcome, complex, capacity, examine, develop.
+9. ZODIACAL RELEASING FRAMING (MANDATORY):
+   Zodiacal Releasing defines thematic life chapters lasting months to years.
+   NEVER use acute-trigger language for ZR: "activates on [date]", "triggers on",
+   "kicks in on", "fires on", "switches on [date]", "key turning in a lock",
+   "alarm clock", "switch flips", "mechanism activates".
+   ALWAYS use thematic language: "shifts emphasis", "opens a chapter",
+   "enters a period characterized by", "a gradual thematic transition".
 """
 
     def _get_system_prompt(self, sd: dict) -> str:
@@ -2774,9 +2783,10 @@ ABSOLUTE RULES (apply to ALL sections):
 
         return response["data"]
 
-    def _validate_evidence_plan(self, plan: dict, citation_registry: dict) -> dict:
-        """Validate each fact in the evidence plan against the citation registry.
-        Drops invalid claims; overwrites with ground-truth where possible."""
+    def _validate_evidence_plan(self, plan: dict, citation_registry: dict,
+                                ref: dict = None) -> dict:
+        """Validate each fact in the evidence plan against the citation registry
+        and ref dict.  Drops invalid claims; overwrites with ground-truth."""
 
         validated_planets = []
         for pc in plan.get("planet_citations", []):
@@ -2785,13 +2795,19 @@ ABSOLUTE RULES (apply to ALL sections):
             if not registry_val:
                 logger.warning(f"Evidence plan: planet '{planet}' not in registry — dropped")
                 continue
-            claimed_sign = pc.get("sign", "")
-            if claimed_sign and claimed_sign not in registry_val:
-                logger.warning(f"Evidence plan: {planet} claimed {claimed_sign}, "
-                               f"registry has {registry_val} — correcting")
-                if "'" in registry_val:
-                    pc["degree_dms"] = registry_val.split("'")[0] + "'"
-                    pc["sign"] = registry_val.split("'")[-1].strip()
+            # Force-correct degree/sign from ref (ground truth)
+            if ref and planet in ref:
+                truth = ref[planet]
+                pc["degree_dms"] = truth.get("dms", pc.get("degree_dms", ""))
+                pc["sign"] = truth.get("sign", pc.get("sign", ""))
+            elif registry_val:
+                claimed_sign = pc.get("sign", "")
+                if claimed_sign and claimed_sign not in registry_val:
+                    logger.warning(f"Evidence plan: {planet} claimed {claimed_sign}, "
+                                   f"registry has {registry_val} — correcting")
+                    if "'" in registry_val:
+                        pc["degree_dms"] = registry_val.split("'")[0] + "'"
+                        pc["sign"] = registry_val.split("'")[-1].strip()
             validated_planets.append(pc)
 
         validated_transits = []
@@ -2847,15 +2863,31 @@ ABSOLUTE RULES (apply to ALL sections):
         import json as _json
 
         plan_json = _json.dumps(validated_plan, indent=2, default=str)
+        # Build degree facts block from validated planet_citations
+        degree_lines = []
+        for pc in validated_plan.get("planet_citations", []):
+            p = pc.get("planet", "")
+            dms = pc.get("degree_dms", "")
+            sign = pc.get("sign", "")
+            if p and dms and sign:
+                degree_lines.append(f"  {p}: {dms} {sign}")
+        degree_block = ""
+        if degree_lines:
+            degree_block = (
+                "\nDEGREE FACTS (BINDING — copy these exactly, do not round or modify):\n"
+                + "\n".join(degree_lines) + "\n"
+            )
+
         plan_block = (
             "=== VALIDATED EVIDENCE PLAN (MANDATORY — use ONLY these facts) ===\n"
             f"{plan_json}\n"
             "=== END EVIDENCE PLAN ===\n\n"
+            f"{degree_block}\n"
             "CRITICAL RULES:\n"
             "1. You may ONLY cite planets, degrees, dates, and dasha lords "
             "listed in the evidence plan above.\n"
             "2. Do NOT invent, round, or approximate any degree or date "
-            "not in the plan.\n"
+            "not in the plan. Copy degree strings EXACTLY from DEGREE FACTS.\n"
             "3. Every [bracketed citation] must correspond to an entry in "
             "the evidence plan.\n"
             "4. If the plan has no transit citations, do NOT mention "
@@ -4478,183 +4510,6 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
             content = f"{expected}\n\n" + content.lstrip()
         return content
 
-    def _validate_degrees_internal(self, content: str, ref: dict, sec_num: int) -> str:
-        """
-        Find and FIX degree hallucinations in all sections.
-        Replaces wrong degree strings with the verified value from the ref dict.
-        Returns corrected content.
-
-        Strategy: if LLM writes "12° 33' Leo" but ref shows Sun at 27° 10' Leo,
-        and no other planet is in Leo, we replace the wrong value with the correct one.
-        Only corrects when match is unambiguous (exactly one planet in that sign).
-
-        For predictive/year_forecast sections, uses a higher threshold (3°) to avoid
-        false corrections on transiting planet positions which change over time.
-        """
-        sd = SECTION_DEFS.get(sec_num, {})
-        sec_type = sd.get("type", "")
-        # Higher threshold for predictive sections (transit degrees shift)
-        is_predictive = sec_type in ("year_forecast", "predictive", "questions")
-        single_threshold = 3.0 if is_predictive else 1.0
-        ambiguous_threshold = 5.0 if is_predictive else 2.0
-
-        # Build sign → [(planet, degree, dms)] lookup
-        sign_to_planets: dict = {}
-        for planet, data in ref.items():
-            if not isinstance(data, dict):
-                continue
-            sign = data.get("sign", "")
-            if not sign:
-                continue
-            sign_to_planets.setdefault(sign, []).append({
-                "planet":  planet,
-                "degree":  data.get("degree", 0),
-                "dms":     data.get("dms", _deg_to_dms(data.get("degree", 0))),
-            })
-
-        pattern = r'(\d{1,2})°\s*(\d{2})\'?\s*([A-Z][a-z]+)'
-        corrections = 0
-
-        def _replace_match(m: re.Match) -> str:
-            nonlocal corrections
-            claimed_d    = int(m.group(1))
-            claimed_m    = int(m.group(2))
-            claimed_sign = m.group(3)
-            claimed_dec  = claimed_d + claimed_m / 60.0
-            original     = m.group(0)
-
-            planets_in_sign = sign_to_planets.get(claimed_sign, [])
-            if not planets_in_sign:
-                return original  # Unknown sign label — leave it
-
-            if len(planets_in_sign) == 1:
-                # Unambiguous: exactly one body in this sign
-                truth = planets_in_sign[0]
-                delta = abs(claimed_dec - truth["degree"])
-                if delta > single_threshold:
-                    correct_str = f"{truth['dms']}' {claimed_sign}"
-                    logger.info(
-                        f"Sec{sec_num} DEGREE FIX: {original} → {correct_str} "
-                        f"({truth['planet']}, delta {delta:.2f}°)"
-                    )
-                    corrections += 1
-                    return correct_str
-            else:
-                # Multiple planets in same sign — find closest match
-                best = min(planets_in_sign, key=lambda p: abs(p["degree"] - claimed_dec))
-                delta = abs(claimed_dec - best["degree"])
-                if delta > ambiguous_threshold:
-                    correct_str = f"{best['dms']}' {claimed_sign}"
-                    logger.info(
-                        f"Sec{sec_num} DEGREE FIX (ambiguous): {original} → {correct_str} "
-                        f"(best match {best['planet']}, delta {delta:.2f}°)"
-                    )
-                    corrections += 1
-                    return correct_str
-
-            return original
-
-        corrected = re.sub(pattern, _replace_match, content)
-        if corrections:
-            logger.info(f"Sec{sec_num}: corrected {corrections} hallucinated degree(s)")
-        return corrected
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Post-generation banned-words audit
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _audit_banned_words(self, content: str, sec_num: int) -> str:
-        """
-        Scan for banned words, log violations, and replace the worst offenders
-        with better alternatives so the final report is clean.
-        """
-        BANNED = {
-            # Cosmic fluff
-            "journey", "tapestry", "dance", "weave", "cosmic", "realm",
-            "vibration", "manifest", "manifestation", "universe",
-            # Weasel hedges
-            "perhaps", "maybe", "might suggest",
-            # Agency-free descriptors
-            "intricate", "multifaceted", "dynamic interplay",
-            "embody", "explore",
-            # Encouragement language (wrong tone for this report)
-            "trust yourself", "remember that", "you deserve", "nurture",
-            # Overused verbal tics (appeared 15+ times across reports)
-            "this is not speculation; it is structural",
-            "this is not speculation",
-            "it is structural",
-        }
-        # Replacements for the most common offenders (case-preserving)
-        REPLACEMENTS = {
-            "potential": "capacity",
-            "deeply": "",          # often filler — just remove
-            "truly": "",           # filler
-            "journey": "path",
-            "tapestry": "structure",
-            "manifest": "produce",
-            "manifestation": "outcome",
-            "multifaceted": "complex",
-            "cosmic": "structural",
-            "realm": "domain",
-            "vibration": "signal",
-            "embody": "express",
-            "explore": "examine",
-            "nurture": "develop",
-            "this is not speculation; it is structural": "the convergence data supports this",
-            "this is not speculation": "the data supports this",
-            "it is structural": "it is data-backed",
-        }
-        # Tone-skew tracking (not banned, but flagged if overused together)
-        TONE_SKEW = [
-            "trap", "wound", "ceiling", "sabotage", "rupture",
-            "collapse", "rubble", "dismantl", "isolat", "destabil",
-        ]
-
-        sd_id = SECTION_DEFS.get(sec_num, {}).get("id", f"sec{sec_num}")
-        lower = content.lower()
-        found = []
-        for word in BANNED:
-            pattern = r"\b" + re.escape(word) + r"\b"
-            matches = re.findall(pattern, lower)
-            if matches:
-                found.append(f"'{word}' ×{len(matches)}")
-
-        # Apply replacements
-        for word, replacement in REPLACEMENTS.items():
-            pattern = re.compile(r"\b" + re.escape(word) + r"\b", re.IGNORECASE)
-            if pattern.search(content):
-                found_word = True
-                if replacement:
-                    content = pattern.sub(replacement, content)
-                else:
-                    # Remove the word and clean up double spaces
-                    content = pattern.sub("", content)
-                    content = re.sub(r"  +", " ", content)
-                    content = re.sub(r" ,", ",", content)
-                    content = re.sub(r" \.", ".", content)
-
-        if found:
-            logger.warning(
-                f"Sec{sec_num} ({sd_id}) BANNED WORDS REPLACED: {', '.join(found)}"
-            )
-        else:
-            logger.info(f"Sec{sec_num} ({sd_id}) banned-word audit: CLEAN")
-
-        # Tone skew audit
-        skew_hits = []
-        for word in TONE_SKEW:
-            import re as _re
-            pat = r"\b" + _re.escape(word)
-            hits = _re.findall(pat, content.lower())
-            if hits:
-                skew_hits.append(f"'{word}' ×{len(hits)}")
-        if len(skew_hits) >= 4:
-            logger.warning(
-                f"Sec{sec_num} ({sd_id}) TONE SKEW — heavy negative framing: "
-                f"{', '.join(skew_hits)}"
-            )
-
-        return content
 
     def _audit_past_dates(self, content: str, sec_num: int) -> str:
         """
