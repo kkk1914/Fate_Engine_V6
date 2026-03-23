@@ -650,58 +650,30 @@ class FatesOrchestrator:
         predictive_events = []
         all_predictive = {}
 
-        # ── PARALLEL BASE CALCULATIONS ──────────────────────────────────────
-        # Western (tropical), Vedic (sidereal), Saju (Chinese calendar), and
-        # Hellenistic (tropical) are independent. Run them in parallel.
-        # Note: swe.set_sid_mode only affects FLG_SIDEREAL calculations, so
-        # tropical calculations in other threads are unaffected.
-        from concurrent.futures import ThreadPoolExecutor
+        # ── PARALLEL BASE CALCULATIONS (Phase 2.4: ProcessPoolExecutor) ─────
+        # Each system runs in its own process with isolated C-library state.
+        # No _swe_lock needed — processes don't share memory.
+        from core.compute_pool import (
+            get_compute_pool,
+            _calculate_western_process,
+            _calculate_vedic_process,
+            _calculate_saju_process,
+            _calculate_hellenistic_process,
+        )
 
-        print("   → Calculating all 4 systems in parallel...")
+        print("   → Calculating all 4 systems in parallel (process pool)...")
+        pool = get_compute_pool()
+        ephe_path = settings.ephe_path
 
-        def _calc_western():
-            with _swe_lock:
-                return self.western_engine.calculate(jd, lat, lon, time_known, year)
+        f_western     = pool.submit(_calculate_western_process, jd, lat, lon, time_known, year, ephe_path)
+        f_vedic       = pool.submit(_calculate_vedic_process, jd, lat, lon, time_known, year, month, day, hour, minute, ephe_path, settings.ayanamsa)
+        f_saju        = pool.submit(_calculate_saju_process, year, month, day, hour, minute, time_known, gender, jd, lon, ephe_path)
+        f_hellenistic = pool.submit(_calculate_hellenistic_process, jd, lat, lon, time_known, year, ephe_path)
 
-        def _calc_vedic():
-            try:
-                with _swe_lock:
-                    return calculate_vedic(jd, lat, lon, time_known, dt)
-            except Exception as e:
-                logger.error(f"Vedic calculation error: {e}")
-                return {"natal": {"placements": {}}, "predictive": {}, "strength": {}}
-
-        def _calc_saju():
-            try:
-                with _swe_lock:
-                    return calculate_bazi(dt, time_known, gender, jd, lon=lon)
-            except Exception as e:
-                import traceback as _tb
-                logger.error(f"Saju calculation error: {e}")
-                _tb.print_exc()
-                return {"natal": {}, "strength": {}, "predictive": {}}
-
-        def _calc_hellenistic():
-            try:
-                with _swe_lock:
-                    return self.hellenistic_engine.calculate(jd, lat, lon, time_known, year)
-            except Exception as e:
-                logger.error(f"Hellenistic calculation error: {e}")
-                return {"lots": {}, "zodiacal_releasing": {}, "annual_profections": {}}
-
-        # max_workers=1: swe calls serialize under global lock anyway.
-        # Keep executor for timeout handling and exception isolation.
-        # True parallelism deferred to Phase 2.4 (ProcessPoolExecutor).
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            f_western     = pool.submit(_calc_western)
-            f_vedic       = pool.submit(_calc_vedic)
-            f_saju        = pool.submit(_calc_saju)
-            f_hellenistic = pool.submit(_calc_hellenistic)
-
-            western     = f_western.result()
-            vedic       = f_vedic.result()
-            saju        = f_saju.result()
-            hellenistic = f_hellenistic.result()
+        western     = f_western.result(timeout=60)
+        vedic       = f_vedic.result(timeout=60)
+        saju        = f_saju.result(timeout=60)
+        hellenistic = f_hellenistic.result(timeout=60)
 
         # Track which systems failed so downstream layers don't claim false convergence
         degradation_flags = {}

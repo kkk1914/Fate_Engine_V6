@@ -26,6 +26,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _read_file(path: str) -> str:
+    """Read file contents. Extracted for asyncio.to_thread offloading."""
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 # ── Request Semaphore (Phase 2.3) ─────────────────────────────────────────
 # Limits concurrent report generation to prevent Gemini rate-limit storms.
 # 10 concurrent users × 15+ LLM calls = 150+ API calls without throttling.
@@ -43,7 +49,14 @@ async def lifespan(app: FastAPI):
         f"(max_concurrent_reports={settings.max_concurrent_reports})"
     )
     yield
-    # Graceful shutdown: close async gateway HTTP client
+    # Graceful shutdown
+    # 1. Shut down compute process pool (swe calculation workers)
+    try:
+        from core.compute_pool import shutdown_pool
+        shutdown_pool()
+    except Exception:
+        pass
+    # 2. Close async gateway HTTP client
     try:
         from experts.gateway_async import async_gateway
         await async_gateway.close()
@@ -235,8 +248,7 @@ async def generate_report_stream(request: ChartRequest):
 
             # Stream the report content section by section
             if path and os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    content = f.read()
+                content = await asyncio.to_thread(_read_file, path)
 
                 # Split by section headers (# or ##)
                 sections = re.split(r'(?=^#{1,2}\s)', content, flags=re.MULTILINE)

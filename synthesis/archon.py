@@ -28,6 +28,12 @@ from synthesis.post_validator import PostValidator, HardRuleEnforcer
 
 logger = logging.getLogger(__name__)
 
+# Shared thread pool for parallel section generation, translation, and extraction.
+# 40 workers: these are I/O-bound (waiting on LLM network calls), so a higher
+# count prevents queueing when 3+ users generate reports concurrently.
+from concurrent.futures import ThreadPoolExecutor, as_completed
+_archon_executor = ThreadPoolExecutor(max_workers=40, thread_name_prefix="archon")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Section Definitions
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2257,103 +2263,101 @@ class Archon:
         # ── Batched Parallel Section Generation ──────────────────────────
         # Sections within a Part are thematically independent and can run
         # in parallel. Between Parts, _section_memory must synchronize.
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         PART_ORDER = ["I", "II", "III", "IV"]
 
-        with ThreadPoolExecutor(max_workers=15) as executor:
-            for part in PART_ORDER:
-                if part not in active_parts:
-                    continue
+        executor = _archon_executor
+        for part in PART_ORDER:
+            if part not in active_parts:
+                continue
 
-                # Collect sections for this part
-                part_sections = [
-                    (n, SECTION_DEFS[n]) for n in sorted(SECTION_DEFS.keys())
-                    if SECTION_DEFS[n]["part"] == part
-                    and not (SECTION_DEFS[n]["id"] == "questions" and not clean_questions)
-                ]
+            # Collect sections for this part
+            part_sections = [
+                (n, SECTION_DEFS[n]) for n in sorted(SECTION_DEFS.keys())
+                if SECTION_DEFS[n]["part"] == part
+                and not (SECTION_DEFS[n]["id"] == "questions" and not clean_questions)
+            ]
 
-                if not part_sections:
-                    continue
+            if not part_sections:
+                continue
 
-                # Part IV (questions) always sequential — needs hard rules from Part III
-                if part == "IV":
-                    for sec_num, sd in part_sections:
-                        print(f"   [Archon] Generating section {sec_num + 1}/{total}: {sd['title']}...")
-                        if sd["id"] == "questions" and clean_questions:
-                            try:
-                                content = self._generate_questions_via_pipeline(
-                                    questions=clean_questions,
-                                    chart_data=chart_data,
-                                    ref=ref,
-                                    temporal_clusters=temporal_clusters or [],
-                                    citation_registry=citation_registry,
-                                    verdict_ledger_block=self._verdict_ledger_block,
-                                )
-                                content = self._post_validator.validate_section(content, sec_num, is_qa=True)
-                                content = self._audit_past_dates(content, sec_num)
-                                content = self._validate_citations(content, citation_registry)
-                                if expert_analyses:
-                                    content = self._validate_consensus_claims(content, expert_analyses)
-                                sections.append(content)
-                                self._extract_section_predictions(sd, content)
-                                continue
-                            except Exception as e:
-                                logger.error(f"QA pipeline failed, falling back to monolithic: {e}")
-                                sd["_pipeline_failed"] = True
-
-                        # Monolithic fallback for questions or non-question Part IV sections
-                        result_content = self._generate_single_section(
-                            sec_num, sd, arbiter_synthesis, chart_data, ref,
-                            cluster_block, temporal_clusters, clean_questions,
-                            query_context, expert_block, wealth_block, wealth_score,
-                            citation_registry, expert_analyses,
-                        )
-                        if result_content:
-                            sections.append(result_content)
-                    print(f"   [Archon] Part {part} complete ({len(part_sections)} sections)")
-                    continue
-
-                # Submit all sections in this part in parallel
-                futures = {}
+            # Part IV (questions) always sequential — needs hard rules from Part III
+            if part == "IV":
                 for sec_num, sd in part_sections:
-                    print(f"   [Archon] Submitting section {sec_num + 1}/{total}: {sd['title']}...")
-                    fut = executor.submit(
-                        self._generate_single_section,
+                    print(f"   [Archon] Generating section {sec_num + 1}/{total}: {sd['title']}...")
+                    if sd["id"] == "questions" and clean_questions:
+                        try:
+                            content = self._generate_questions_via_pipeline(
+                                questions=clean_questions,
+                                chart_data=chart_data,
+                                ref=ref,
+                                temporal_clusters=temporal_clusters or [],
+                                citation_registry=citation_registry,
+                                verdict_ledger_block=self._verdict_ledger_block,
+                            )
+                            content = self._post_validator.validate_section(content, sec_num, is_qa=True)
+                            content = self._audit_past_dates(content, sec_num)
+                            content = self._validate_citations(content, citation_registry)
+                            if expert_analyses:
+                                content = self._validate_consensus_claims(content, expert_analyses)
+                            sections.append(content)
+                            self._extract_section_predictions(sd, content)
+                            continue
+                        except Exception as e:
+                            logger.error(f"QA pipeline failed, falling back to monolithic: {e}")
+                            sd["_pipeline_failed"] = True
+
+                    # Monolithic fallback for questions or non-question Part IV sections
+                    result_content = self._generate_single_section(
                         sec_num, sd, arbiter_synthesis, chart_data, ref,
                         cluster_block, temporal_clusters, clean_questions,
                         query_context, expert_block, wealth_block, wealth_score,
                         citation_registry, expert_analyses,
                     )
-                    futures[fut] = (sec_num, sd)
+                    if result_content:
+                        sections.append(result_content)
+                print(f"   [Archon] Part {part} complete ({len(part_sections)} sections)")
+                continue
 
-                # Collect results in section order
-                part_results = {}
-                for fut in as_completed(futures):
-                    sec_num, sd = futures[fut]
-                    try:
-                        content = fut.result()
-                        part_results[sec_num] = (sd, content)
-                    except Exception as e:
-                        logger.error(f"Section {sec_num} ({sd['id']}) parallel gen failed: {e}")
-                        part_results[sec_num] = (
-                            sd, f"\n\n# {sd['header']}\n\n**[Generation Failed: {e}]**\n\n"
-                        )
+            # Submit all sections in this part in parallel
+            futures = {}
+            for sec_num, sd in part_sections:
+                print(f"   [Archon] Submitting section {sec_num + 1}/{total}: {sd['title']}...")
+                fut = executor.submit(
+                    self._generate_single_section,
+                    sec_num, sd, arbiter_synthesis, chart_data, ref,
+                    cluster_block, temporal_clusters, clean_questions,
+                    query_context, expert_block, wealth_block, wealth_score,
+                    citation_registry, expert_analyses,
+                )
+                futures[fut] = (sec_num, sd)
 
-                # Append in order and update section memory
-                for sec_num in sorted(part_results.keys()):
-                    sd, content = part_results[sec_num]
-                    if content:
-                        sections.append(content)
-                        self._extract_section_predictions(sd, content)
-                        if sd.get("id") == "directive":
-                            self._extract_hard_rules(content)
-                        if sd.get("type") == "year_forecast":
-                            year_key = str(sd.get("target_year", ""))
-                            if year_key:
-                                self._almanac_cache[year_key] = content[:2000]
+            # Collect results in section order
+            part_results = {}
+            for fut in as_completed(futures):
+                sec_num, sd = futures[fut]
+                try:
+                    content = fut.result()
+                    part_results[sec_num] = (sd, content)
+                except Exception as e:
+                    logger.error(f"Section {sec_num} ({sd['id']}) parallel gen failed: {e}")
+                    part_results[sec_num] = (
+                        sd, f"\n\n# {sd['header']}\n\n**[Generation Failed: {e}]**\n\n"
+                    )
 
-                print(f"   [Archon] Part {part} complete ({len(part_results)} sections)")
+            # Append in order and update section memory
+            for sec_num in sorted(part_results.keys()):
+                sd, content = part_results[sec_num]
+                if content:
+                    sections.append(content)
+                    self._extract_section_predictions(sd, content)
+                    if sd.get("id") == "directive":
+                        self._extract_hard_rules(content)
+                    if sd.get("type") == "year_forecast":
+                        year_key = str(sd.get("target_year", ""))
+                        if year_key:
+                            self._almanac_cache[year_key] = content[:2000]
+
+            print(f"   [Archon] Part {part} complete ({len(part_results)} sections)")
 
         # ── Assemble English report ────────────────────────────────────────
         generated_sec_nums = [
@@ -2404,8 +2408,6 @@ class Archon:
                 # Phase 2.5: Translate all sections concurrently via thread pool
                 # Each _translate_section() calls gemini-2.5-flash (translation_model)
                 # Sequential: ~30s for 10 sections. Concurrent: ~5s.
-                from concurrent.futures import ThreadPoolExecutor
-
                 section_data = list(zip(generated_sec_nums, sections))
 
                 def _translate_one(args):
@@ -2416,11 +2418,10 @@ class Archon:
                         eng_content, glossary, sd.get("type", "")
                     )
 
-                with ThreadPoolExecutor(max_workers=min(len(section_data), 8)) as pool:
-                    burmese_sections = list(pool.map(
-                        _translate_one,
-                        [(i, sn, ec) for i, (sn, ec) in enumerate(section_data)],
-                    ))
+                burmese_sections = list(_archon_executor.map(
+                    _translate_one,
+                    [(i, sn, ec) for i, (sn, ec) in enumerate(section_data)],
+                ))
 
                 burmese_report = self._assemble_report(
                     burmese_header, burmese_sections, generated_sec_nums,
@@ -3551,27 +3552,26 @@ ABSOLUTE RULES (apply to ALL sections):
         if not valid_experts:
             return ""
 
-        # Parallel extraction — 4 experts, 4 workers
+        # Parallel extraction — 4 experts, shared pool
         merged: Dict[str, List[str]] = {}
         futures = {}
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            for exp in valid_experts:
-                fut = executor.submit(
-                    self._extract_domain_bullets,
-                    exp["system"],
-                    exp["analysis"],
-                )
-                futures[fut] = exp["system"]
+        for exp in valid_experts:
+            fut = _archon_executor.submit(
+                self._extract_domain_bullets,
+                exp["system"],
+                exp["analysis"],
+            )
+            futures[fut] = exp["system"]
 
-            for fut in as_completed(futures):
-                system_name = futures[fut]
-                try:
-                    domain_dict = fut.result()
-                    if domain_dict:
-                        for domain, bullets in domain_dict.items():
-                            merged.setdefault(domain, []).extend(bullets)
-                except Exception as e:
-                    logger.warning(f"Domain ledger thread failed for {system_name}: {e}")
+        for fut in as_completed(futures):
+            system_name = futures[fut]
+            try:
+                domain_dict = fut.result()
+                if domain_dict:
+                    for domain, bullets in domain_dict.items():
+                        merged.setdefault(domain, []).extend(bullets)
+            except Exception as e:
+                logger.warning(f"Domain ledger thread failed for {system_name}: {e}")
 
         if not merged:
             logger.warning("All domain ledger extractions failed, falling back to expert block")
@@ -5022,48 +5022,63 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
     def _validate_citations(self, content: str, citation_registry: dict) -> str:
         """Validate [bracketed citations] in generated text against the citation registry.
 
-        Checks degree claims and date claims. Logs mismatches.
-        Does not strip content \u2014 only logs warnings for now.
+        Checks degree claims and date claims. Strips sentences containing
+        verified mismatches to prevent hallucinated data reaching the user.
         """
-        import re
-
         # Find all bracketed citations
         citations = re.findall(r'\[([^\]]+)\]', content)
         if not citations:
             return content
 
         validated = 0
-        warnings = 0
+        stripped_citations: List[str] = []
 
         for citation in citations:
             # Check degree claims: "Sun at 23\u00b0 42' Cancer" or "Jupiter 14\u00b055' Sag"
             deg_match = re.search(r'(\w+)\s+(?:at\s+)?(\d{1,2})\u00b0\s*(\d{2})\'?\s*(\w+)', citation)
             if deg_match:
                 planet = deg_match.group(1)
-                claimed_deg = int(deg_match.group(2))
                 claimed_sign = deg_match.group(4)
                 ref_val = citation_registry.get(planet, "")
                 if ref_val and claimed_sign in ref_val:
                     validated += 1
                 elif ref_val:
-                    logger.warning(f"CITATION MISMATCH: [{citation}] \u2014 registry has {planet}={ref_val}")
-                    warnings += 1
+                    logger.warning(
+                        f"CITATION MISMATCH (stripping): [{citation}] "
+                        f"\u2014 registry has {planet}={ref_val}"
+                    )
+                    stripped_citations.append(citation)
                 continue
 
             # Check date claims: "exact 2027-03-14" or "entry 2027-01-22"
             date_match = re.search(r'(?:exact|entry|exit)\s+(\d{4}-\d{2}-\d{2})', citation)
             if date_match:
                 claimed_date = date_match.group(1)
-                # Search registry for this date
                 found = any(claimed_date in v for v in citation_registry.values())
                 if found:
                     validated += 1
                 else:
-                    logger.warning(f"CITATION DATE NOT IN REGISTRY: [{citation}] \u2014 date {claimed_date} not found")
-                    warnings += 1
+                    logger.warning(
+                        f"CITATION DATE NOT IN REGISTRY (stripping): [{citation}] "
+                        f"\u2014 date {claimed_date} not found"
+                    )
+                    stripped_citations.append(citation)
 
-        if validated or warnings:
-            logger.info(f"Citation audit: {validated} validated, {warnings} warnings out of {len(citations)} citations")
+        # Strip sentences containing mismatched citations
+        if stripped_citations:
+            for bad_citation in stripped_citations:
+                escaped = re.escape(bad_citation)
+                # Remove the sentence containing the bad citation
+                pattern = r'[^.!?\n]*\[' + escaped + r'\][^.!?\n]*[.!?]?\s*'
+                content = re.sub(pattern, '', content)
+
+        total = len(citations)
+        stripped_count = len(stripped_citations)
+        if validated or stripped_count:
+            logger.info(
+                f"Citation audit: {validated} validated, {stripped_count} stripped "
+                f"out of {total} citations"
+            )
 
         return content
 

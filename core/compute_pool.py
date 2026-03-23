@@ -109,11 +109,12 @@ def _calculate_hellenistic_process(
 _pool: Optional[ProcessPoolExecutor] = None
 
 
-def get_compute_pool(max_workers: int = 3) -> ProcessPoolExecutor:
+def get_compute_pool(max_workers: int = 8) -> ProcessPoolExecutor:
     """Get or create the global process pool.
 
-    max_workers=3: one per system pair is sufficient. ~100ms creation overhead
-    + serialization cost is acceptable for the 3-5s calculation phase.
+    max_workers=8: supports 2 concurrent users × 4 system calculations each.
+    ~100ms creation overhead + serialization cost is acceptable for the
+    3-5s calculation phase.
     """
     global _pool
     if _pool is None or _pool._broken:
