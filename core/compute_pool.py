@@ -18,12 +18,18 @@ Usage:
 """
 import os
 import logging
+import threading
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from typing import Dict, Any, Optional
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+# Thread-safe lock for pool recycling — prevents concurrent reset races
+# when multiple requests timeout simultaneously.
+_pool_lock = threading.Lock()
 
 # ── Top-Level Worker Functions ────────────────────────────────────────────
 # MUST be importable top-level functions (not closures or methods).
@@ -110,23 +116,54 @@ _pool: Optional[ProcessPoolExecutor] = None
 
 
 def get_compute_pool(max_workers: int = 8) -> ProcessPoolExecutor:
-    """Get or create the global process pool.
+    """Get or create the global process pool (thread-safe).
 
     max_workers=8: supports 2 concurrent users × 4 system calculations each.
     ~100ms creation overhead + serialization cost is acceptable for the
     3-5s calculation phase.
     """
     global _pool
-    if _pool is None or _pool._broken:
-        _pool = ProcessPoolExecutor(max_workers=max_workers)
-        logger.info(f"Process pool initialized with {max_workers} workers")
-    return _pool
+    if _pool is not None and not _pool._broken:
+        return _pool
+    with _pool_lock:
+        # Double-check after acquiring lock (another thread may have recreated)
+        if _pool is None or _pool._broken:
+            _pool = ProcessPoolExecutor(max_workers=max_workers)
+            logger.info(f"Process pool initialized with {max_workers} workers")
+        return _pool
 
 
 def shutdown_pool():
-    """Shutdown the process pool gracefully."""
+    """Shutdown the process pool gracefully (thread-safe)."""
     global _pool
-    if _pool is not None:
-        _pool.shutdown(wait=True)
-        _pool = None
-        logger.info("Process pool shut down")
+    with _pool_lock:
+        if _pool is not None:
+            _pool.shutdown(wait=True)
+            _pool = None
+            logger.info("Process pool shut down")
+
+
+def recycle_pool(reason: str = "unknown"):
+    """Force-recycle the process pool after zombie/broken workers.
+
+    Thread-safe: only one thread performs the recycle; others wait and
+    get the fresh pool. Call this when a worker hangs (TimeoutError)
+    or the pool breaks (BrokenProcessPool).
+    """
+    global _pool
+    with _pool_lock:
+        logger.critical(
+            f"POOL RECYCLE: Destroying and recreating process pool. "
+            f"Reason: {reason}. Zombie workers will be orphaned and "
+            f"must be cleaned up by the OS."
+        )
+        if _pool is not None:
+            try:
+                _pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            _pool = None
+        # Recreate immediately
+        _pool = ProcessPoolExecutor(max_workers=8)
+        logger.info("Process pool recycled — fresh pool ready")
+        return _pool

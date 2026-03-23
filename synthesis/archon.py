@@ -2423,6 +2423,13 @@ class Archon:
                     [(i, sn, ec) for i, (sn, ec) in enumerate(section_data)],
                 ))
 
+                # Validate citations in translated sections — hallucinated
+                # citations can survive or be introduced during translation
+                burmese_sections = [
+                    self._validate_citations(sec, citation_registry)
+                    for sec in burmese_sections
+                ]
+
                 burmese_report = self._assemble_report(
                     burmese_header, burmese_sections, generated_sec_nums,
                     original_questions or clean_questions, temporal_clusters,
@@ -5064,13 +5071,38 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
                     )
                     stripped_citations.append(citation)
 
-        # Strip sentences containing mismatched citations
+        # TODO: Tech Debt — This regex-based stripping approach is fragile for
+        # complex Markdown (nested bullets, multi-line bolding, tables). It should
+        # eventually be replaced with a lightweight Markdown AST parser (marko or
+        # mistune) that can surgically remove nodes containing bad citations while
+        # preserving document structure.
+
+        # Strip sentences containing mismatched citations (Markdown-aware)
         if stripped_citations:
             for bad_citation in stripped_citations:
-                escaped = re.escape(bad_citation)
-                # Remove the sentence containing the bad citation
-                pattern = r'[^.!?\n]*\[' + escaped + r'\][^.!?\n]*[.!?]?\s*'
-                content = re.sub(pattern, '', content)
+                bracket_text = f'[{bad_citation}]'
+                # Find which lines contain this citation
+                lines = content.split('\n')
+                cleaned_lines = []
+                for line in lines:
+                    if bracket_text not in line:
+                        cleaned_lines.append(line)
+                        continue
+                    # Markdown headers: strip the bracket only, preserve the header
+                    if line.strip().startswith('#'):
+                        cleaned_lines.append(line.replace(bracket_text, ''))
+                        continue
+                    # Body text: remove the sentence containing the bad citation
+                    escaped = re.escape(bad_citation)
+                    pattern = r'[^.!?\n]*\[' + escaped + r'\][^.!?\n]*[.!?]?\s*'
+                    stripped_line = re.sub(pattern, '', line)
+                    # Keep the line only if it still has meaningful content
+                    if stripped_line.strip() and stripped_line.strip() not in ('-', '*', '•'):
+                        cleaned_lines.append(stripped_line)
+                content = '\n'.join(cleaned_lines)
+
+            # Collapse excessive blank lines left by stripping
+            content = re.sub(r'\n{3,}', '\n\n', content)
 
         total = len(citations)
         stripped_count = len(stripped_citations)

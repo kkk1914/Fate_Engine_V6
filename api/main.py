@@ -56,7 +56,13 @@ async def lifespan(app: FastAPI):
         shutdown_pool()
     except Exception:
         pass
-    # 2. Close async gateway HTTP client
+    # 2. Shut down archon thread pool (LLM I/O workers)
+    try:
+        from synthesis.archon import _archon_executor
+        _archon_executor.shutdown(wait=False)
+    except Exception:
+        pass
+    # 3. Close async gateway HTTP client
     try:
         from experts.gateway_async import async_gateway
         await async_gateway.close()
@@ -210,44 +216,40 @@ async def generate_report_stream(request: ChartRequest):
 
             from orchestrator_async import async_orchestrator
 
-            # Layer 1: Calculations
             yield {"event": "status", "data": json.dumps({
                 "phase": "calculation", "message": "Computing planetary positions (4 systems)..."
             })}
 
-            chart_data = await asyncio.to_thread(
-                async_orchestrator._sync._calculate_charts,
-                request.birth_datetime, request.location,
-                request.gender or "unspecified",
-                lat=request.lat, lon=request.lon,
+            # Run full report generation as a Task so we can send keep-alive
+            # pings while it runs. Cloud load balancers (AWS ALB, Cloudflare)
+            # drop idle SSE connections after ~60s; reports take 60-120s.
+            report_task = asyncio.create_task(
+                async_orchestrator.generate_report_async(
+                    birth_datetime=request.birth_datetime,
+                    location=request.location,
+                    gender=request.gender,
+                    name=request.name,
+                    output_dir=request.output_dir,
+                    lat=request.lat,
+                    lon=request.lon,
+                )
             )
 
-            yield {"event": "status", "data": json.dumps({
-                "phase": "calculation", "message": "Chart calculations complete"
-            })}
+            # Keep-alive ping loop — prevents load balancer idle timeout
+            while not report_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(report_task), timeout=15)
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": "keep-alive"}
 
-            # Layer 2: Expert analysis
-            yield {"event": "status", "data": json.dumps({
-                "phase": "experts", "message": "Running expert analysis (4 concurrent)..."
-            })}
-
-            # Run full report generation (non-streaming internally)
-            path = await async_orchestrator.generate_report_async(
-                birth_datetime=request.birth_datetime,
-                location=request.location,
-                gender=request.gender,
-                name=request.name,
-                output_dir=request.output_dir,
-                lat=request.lat,
-                lon=request.lon,
-            )
+            path = report_task.result()
 
             yield {"event": "status", "data": json.dumps({
                 "phase": "complete", "message": "Report generation complete"
             })}
 
             # Stream the report content section by section
-            if path and os.path.exists(path):
+            if path and await asyncio.to_thread(os.path.exists, path):
                 content = await asyncio.to_thread(_read_file, path)
 
                 # Split by section headers (# or ##)

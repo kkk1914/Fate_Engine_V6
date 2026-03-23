@@ -86,12 +86,15 @@ class AsyncFatesOrchestrator:
             birth_datetime, location, gender, lat=lat, lon=lon,
         )
 
-        # Pydantic validation at boundary
+        # Pydantic validation at boundary — Option B (defensive):
+        # overwrite raw dict with validated/coerced model, never abort report.
         from core.models import ChartData
         try:
-            ChartData.validate_chart(chart_data)
+            validated_model = ChartData.validate_chart(chart_data)
+            chart_data = validated_model.model_dump(exclude_unset=True)
         except Exception as e:
             logger.warning(f"Chart data validation warning: {e}")
+            chart_data["validation_warnings"] = str(e)
 
         # House lords (deterministic, fast)
         from orchestrator import _compute_house_lords

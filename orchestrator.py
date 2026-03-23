@@ -362,13 +362,16 @@ class FatesOrchestrator:
         chart_data = self._calculate_charts(birth_datetime, location, gender, lat=lat, lon=lon)
 
         # Phase 1.6: Validate chart_data structure at boundary
+        # Option B (defensive): overwrite raw dict with validated/coerced model,
+        # but never abort the report over a minor type mismatch.
         from core.models import ChartData
         try:
-            ChartData.validate_chart(chart_data)
+            validated_model = ChartData.validate_chart(chart_data)
+            chart_data = validated_model.model_dump(exclude_unset=True)
             logger.info("Chart data validated against Pydantic schema")
         except Exception as e:
             logger.warning(f"Chart data validation warning: {e}")
-            # Non-fatal: log but continue — extra='allow' makes this soft
+            chart_data["validation_warnings"] = str(e)
 
         # ── Deterministic House Lord & Element Table ─────────────────────
         # Computed ONCE from cusps so LLMs cannot hallucinate lords/elements
@@ -653,8 +656,10 @@ class FatesOrchestrator:
         # ── PARALLEL BASE CALCULATIONS (Phase 2.4: ProcessPoolExecutor) ─────
         # Each system runs in its own process with isolated C-library state.
         # No _swe_lock needed — processes don't share memory.
+        from concurrent.futures.process import BrokenProcessPool
         from core.compute_pool import (
             get_compute_pool,
+            recycle_pool,
             _calculate_western_process,
             _calculate_vedic_process,
             _calculate_saju_process,
@@ -665,15 +670,50 @@ class FatesOrchestrator:
         pool = get_compute_pool()
         ephe_path = settings.ephe_path
 
-        f_western     = pool.submit(_calculate_western_process, jd, lat, lon, time_known, year, ephe_path)
-        f_vedic       = pool.submit(_calculate_vedic_process, jd, lat, lon, time_known, year, month, day, hour, minute, ephe_path, settings.ayanamsa)
-        f_saju        = pool.submit(_calculate_saju_process, year, month, day, hour, minute, time_known, gender, jd, lon, ephe_path)
-        f_hellenistic = pool.submit(_calculate_hellenistic_process, jd, lat, lon, time_known, year, ephe_path)
+        _needs_recycle = False
+        try:
+            f_western     = pool.submit(_calculate_western_process, jd, lat, lon, time_known, year, ephe_path)
+            f_vedic       = pool.submit(_calculate_vedic_process, jd, lat, lon, time_known, year, month, day, hour, minute, ephe_path, settings.ayanamsa)
+            f_saju        = pool.submit(_calculate_saju_process, year, month, day, hour, minute, time_known, gender, jd, lon, ephe_path)
+            f_hellenistic = pool.submit(_calculate_hellenistic_process, jd, lat, lon, time_known, year, ephe_path)
+        except BrokenProcessPool:
+            logger.critical("Process pool broken during submit — recycling")
+            pool = recycle_pool(reason="BrokenProcessPool on submit")
+            f_western     = pool.submit(_calculate_western_process, jd, lat, lon, time_known, year, ephe_path)
+            f_vedic       = pool.submit(_calculate_vedic_process, jd, lat, lon, time_known, year, month, day, hour, minute, ephe_path, settings.ayanamsa)
+            f_saju        = pool.submit(_calculate_saju_process, year, month, day, hour, minute, time_known, gender, jd, lon, ephe_path)
+            f_hellenistic = pool.submit(_calculate_hellenistic_process, jd, lat, lon, time_known, year, ephe_path)
 
-        western     = f_western.result(timeout=60)
-        vedic       = f_vedic.result(timeout=60)
-        saju        = f_saju.result(timeout=60)
-        hellenistic = f_hellenistic.result(timeout=60)
+        # Collect results with individual timeout protection.
+        # TimeoutError does NOT kill the hung process — it becomes a zombie.
+        # If any worker zombies, flag for pool recycling after collection.
+        def _safe_result(future, system_name: str, fallback: dict, timeout: int = 60):
+            nonlocal _needs_recycle
+            try:
+                return future.result(timeout=timeout)
+            except TimeoutError:
+                logger.critical(
+                    f"ZOMBIE WORKER: {system_name} process exceeded {timeout}s timeout. "
+                    f"Worker is hung and will not be recovered. Pool recycle required."
+                )
+                _needs_recycle = True
+                return fallback
+            except BrokenProcessPool:
+                logger.critical(f"BrokenProcessPool while collecting {system_name} result")
+                _needs_recycle = True
+                return fallback
+            except Exception as e:
+                logger.error(f"{system_name} calculation failed in process pool: {e}")
+                return fallback
+
+        western     = _safe_result(f_western, "Western", {"natal": {"placements": {}}, "predictive": {}})
+        vedic       = _safe_result(f_vedic, "Vedic", {"natal": {"placements": {}}, "predictive": {}, "strength": {}})
+        saju        = _safe_result(f_saju, "Saju", {"natal": {}, "strength": {}, "predictive": {}})
+        hellenistic = _safe_result(f_hellenistic, "Hellenistic", {"lots": {}, "zodiacal_releasing": {}, "annual_profections": {}})
+
+        # Recycle the pool if any worker zombied or the pool broke
+        if _needs_recycle:
+            recycle_pool(reason="worker timeout or broken pool during calculation")
 
         # Track which systems failed so downstream layers don't claim false convergence
         degradation_flags = {}
@@ -708,12 +748,17 @@ class FatesOrchestrator:
                     pd_engine = PrimaryDirections(jd, lat, lon)
                     results["primary_dirs"] = pd_engine.get_critical_directions(years_ahead=15)
 
-                    # Lunar Returns (15-year window)
-                    print("   → Calculating Lunar Returns (15yr)...")
-                    moon_lon = western['natal']['placements']['Moon']['longitude']
-                    results["lunar_returns"] = self.western_engine.calculate_lunar_returns(
-                        jd, moon_lon, years=15
-                    )
+                    # Lunar Returns (15-year window) — guarded against degraded Western data
+                    moon_data = western.get('natal', {}).get('placements', {}).get('Moon', {})
+                    moon_lon = moon_data.get('longitude') if isinstance(moon_data, dict) else None
+                    if moon_lon is not None:
+                        print("   → Calculating Lunar Returns (15yr)...")
+                        results["lunar_returns"] = self.western_engine.calculate_lunar_returns(
+                            jd, moon_lon, years=15
+                        )
+                    else:
+                        logger.warning("Moon longitude unavailable — skipping Lunar Returns")
+                        results["lunar_returns"] = []
 
                     # Pre-natal Syzygy (Phase 3)
                     print("   → Calculating Pre-natal Syzygy...")
@@ -819,9 +864,25 @@ class FatesOrchestrator:
             f_dignities = pool.submit(_compute_dignities)
             f_kakshya   = pool.submit(_compute_kakshya)
 
-            tropical_results = f_tropical.result()
-            dignity_results  = f_dignities.result()
-            kakshya_data     = f_kakshya.result()
+            try:
+                tropical_results = f_tropical.result(timeout=120)
+            except Exception as e:
+                logger.error(f"Tropical chain timed out or failed: {e}")
+                tropical_results = {
+                    "primary_dirs": [], "lunar_returns": [], "syzygy": {},
+                    "solar_returns": [], "solar_return_analysis": [],
+                    "dodecatemoria": {"error": str(e)}, "parans": None,
+                }
+            try:
+                dignity_results = f_dignities.result(timeout=120)
+            except Exception as e:
+                logger.error(f"Dignity computation timed out or failed: {e}")
+                dignity_results = {"dignities": {}, "receptions": {}}
+            try:
+                kakshya_data = f_kakshya.result(timeout=120)
+            except Exception as e:
+                logger.error(f"Kakshya computation timed out or failed: {e}")
+                kakshya_data = {"error": str(e)}
 
         # Unpack tropical chain results
         western["predictive"]["primary_directions"] = tropical_results["primary_dirs"]

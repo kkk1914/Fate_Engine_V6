@@ -45,6 +45,10 @@ class WesternExpert:
     Length: 700-900 words. Dense, specific, zero padding."""
 
     def analyze(self, chart_data: dict, mode: str = "natal", user_questions: list = None) -> dict:
+        # Skip LLM call if this system degraded — prevents hallucination on empty data
+        if chart_data.get("degradation_flags", {}).get("Western"):
+            logger.warning("Western system degraded — skipping expert analysis")
+            return {"system": "Western", "mode": mode, "analysis": "[System degraded — data unavailable]", "confidence": 0.0, "model_used": "none"}
         prompt = self._question_prefix(user_questions) + self._build_prompt(chart_data, mode)
         # Inject mandatory house lord reference (prevents hallucinated lords)
         lord_ref = chart_data.get("_house_lord_reference_block", "")

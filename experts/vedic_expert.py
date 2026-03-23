@@ -43,6 +43,10 @@ FORMAT — write 6 sections exactly:
 Length: 700-900 words total. Dense, specific, no padding. Every claim referenced to chart data."""
 
     def analyze(self, chart_data: dict, mode: str = "natal", user_questions: list = None) -> dict:
+        # Skip LLM call if this system degraded — prevents hallucination on empty data
+        if chart_data.get("degradation_flags", {}).get("Vedic"):
+            logger.warning("Vedic system degraded — skipping expert analysis")
+            return {"system": "Vedic", "mode": mode, "analysis": "[System degraded — data unavailable]", "confidence": 0.0, "model_used": "none"}
         prompt = self._question_prefix(user_questions) + self._build_prompt(chart_data, mode)
         # Inject mandatory house lord reference (prevents hallucinated lords)
         lord_ref = chart_data.get("_house_lord_reference_block", "")

@@ -41,6 +41,10 @@ class SajuExpert:
     Length: 700-900 words. Strategic, concrete, no mystical padding."""
 
     def analyze(self, chart_data: dict, mode: str = "natal", user_questions: list = None) -> dict:
+        # Skip LLM call if this system degraded — prevents hallucination on empty data
+        if chart_data.get("degradation_flags", {}).get("Saju"):
+            logger.warning("Saju system degraded — skipping expert analysis")
+            return {"system": "Saju", "mode": mode, "analysis": "[System degraded — data unavailable]", "confidence": 0.0, "model_used": "none"}
         prompt = self._question_prefix(user_questions) + self._build_prompt(chart_data, mode)
         # Inject mandatory house lord + Bazi element reference (prevents hallucinated elements)
         lord_ref = chart_data.get("_house_lord_reference_block", "")
