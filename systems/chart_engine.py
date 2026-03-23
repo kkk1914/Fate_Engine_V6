@@ -17,10 +17,9 @@ def _swe_pos(result):
 
 from geopy.geocoders import Nominatim
 
-# -----------------------------
 # Swiss Ephemeris Setup
-# -----------------------------
-swe.set_ephe_path("./ephe")
+# Note: swe.set_ephe_path() is called once in core/ephemeris.py at module init.
+# Do NOT call it here — it mutates global C-library state and races with threads.
 
 # -----------------------------
 # Constants / Tables

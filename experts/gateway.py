@@ -25,6 +25,7 @@ from google import genai
 from google.genai import types
 from typing import Dict, Any, Optional
 from config import settings
+from core.telemetry import get_cost_tracker
 import json
 import time
 import logging
@@ -123,6 +124,7 @@ class LLMGateway:
             config_kwargs["thinking_config"] = thinking_cfg
 
         try:
+            t0 = time.time()
             logger.info(f"Calling Gemini {model} structured (~{est_tokens} tokens)")
             response = self.client.models.generate_content(
                 model=model,
@@ -132,6 +134,7 @@ class LLMGateway:
                     **config_kwargs,
                 ),
             )
+            latency_ms = (time.time() - t0) * 1000
 
             raw = response.text or ""
             clean = raw.strip()
@@ -141,6 +144,17 @@ class LLMGateway:
                     clean = clean[4:]
                 clean = clean.rsplit("```", 1)[0].strip()
 
+            input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0)
+            output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0)
+
+            # Phase 1.3: Record cost telemetry
+            tracker = get_cost_tracker()
+            if tracker:
+                phase = kwargs.get("phase", "structured")
+                tracker.record(model=model, input_tokens=input_tokens,
+                               output_tokens=output_tokens, phase=phase,
+                               latency_ms=latency_ms)
+
             try:
                 data = json.loads(clean)
                 return {
@@ -148,8 +162,8 @@ class LLMGateway:
                     "data": data,
                     "model": model,
                     "usage": {
-                        "input_tokens":  getattr(response.usage_metadata, "prompt_token_count", 0),
-                        "output_tokens": getattr(response.usage_metadata, "candidates_token_count", 0),
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
                     },
                 }
             except json.JSONDecodeError as e:
@@ -213,6 +227,7 @@ class LLMGateway:
 
         for attempt in range(max_retries):
             try:
+                t0 = time.time()
                 logger.info(f"Calling Gemini {model} (attempt {attempt + 1}, ~{est_tokens} tokens)")
                 response = self.client.models.generate_content(
                     model=model,
@@ -222,14 +237,26 @@ class LLMGateway:
                         **config_kwargs,
                     ),
                 )
+                latency_ms = (time.time() - t0) * 1000
+
+                input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0)
+                output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0)
+
+                # Phase 1.3: Record cost telemetry
+                tracker = get_cost_tracker()
+                if tracker:
+                    phase = kwargs.get("phase", "generate")
+                    tracker.record(model=model, input_tokens=input_tokens,
+                                   output_tokens=output_tokens, phase=phase,
+                                   latency_ms=latency_ms)
 
                 return {
                     "success": True,
                     "content": response.text or "",
                     "model": model,
                     "usage": {
-                        "input_tokens":  getattr(response.usage_metadata, "prompt_token_count", 0),
-                        "output_tokens": getattr(response.usage_metadata, "candidates_token_count", 0),
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
                     },
                 }
 

@@ -203,6 +203,104 @@ class ClaimExtractor:
         return "\n".join(lines)
 
 
+def _verify_source_map(
+    source_map: list,
+    ref: dict,
+    house_lords: dict,
+) -> List[Dict[str, str]]:
+    """Verify source_map claims against actual chart data.
+
+    Phase 3.5: Replaces regex band-aids with prompt-architecture verification.
+    Each source_map entry has {claim, evidence_key, value}.
+    We resolve evidence_key against ref/house_lords and check if value matches.
+
+    Returns list of error dicts for mismatched claims.
+    """
+    errors = []
+
+    for entry in source_map:
+        claim = entry.get("claim", "")
+        key_path = entry.get("evidence_key", "")
+        claimed_value = str(entry.get("value", "")).strip()
+
+        if not key_path or not claimed_value:
+            continue
+
+        # Resolve the dot-path against available data
+        actual_value = _resolve_dot_path(key_path, ref, house_lords)
+
+        if actual_value is None:
+            # Key not found — might be a valid key we don't have access to here
+            continue
+
+        actual_str = str(actual_value).strip()
+
+        # Fuzzy match: allow case-insensitive and partial matches
+        if (claimed_value.lower() != actual_str.lower()
+                and claimed_value.lower() not in actual_str.lower()
+                and actual_str.lower() not in claimed_value.lower()):
+            errors.append({
+                "claim": claim,
+                "evidence_key": key_path,
+                "claimed": claimed_value,
+                "actual": actual_str,
+            })
+
+    return errors
+
+
+def _resolve_dot_path(
+    path: str,
+    ref: dict,
+    house_lords: dict,
+) -> Optional[str]:
+    """Resolve a dot-path like 'house_lords.western_lords.7' against data.
+
+    Supports:
+      - house_lords.western_lords.{N} → planet name
+      - house_lords.vedic_lords.{N} → planet name
+      - western.natal.{Planet}.sign → sign name
+      - Any nested dict path
+    """
+    parts = path.split(".")
+
+    # Handle house_lords paths specially
+    if parts[0] == "house_lords" and len(parts) >= 3:
+        lord_type = parts[1]  # western_lords or vedic_lords
+        lords = house_lords.get(lord_type, {})
+        if len(parts) >= 3:
+            try:
+                house_num = int(parts[2])
+                return lords.get(house_num, lords.get(str(house_num)))
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    # Handle ref paths (planet positions)
+    # ref is flat: {"Sun": {"sign": "Gemini", "degree": 23.5, ...}, ...}
+    if len(parts) >= 3 and parts[0] in ("western", "vedic"):
+        # e.g., western.natal.Sun.sign → ref["Sun"]["sign"]
+        planet = parts[2] if len(parts) > 2 else None
+        field = parts[3] if len(parts) > 3 else None
+        if planet and planet in ref:
+            if field:
+                return ref[planet].get(field) if isinstance(ref[planet], dict) else None
+            return str(ref[planet])
+        return None
+
+    # Generic nested dict resolution
+    current = ref
+    for part in parts:
+        if isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+        if current is None:
+            return None
+
+    return str(current) if current is not None else None
+
+
 def _scrub_scores(verdict_data: dict) -> dict:
     """Remove convergence_score from timing_windows before NARRATE.
 
@@ -298,7 +396,33 @@ class QAPipeline:
                 "items": {"type": "string"},
                 "description": "Most important future dates for this question, across ALL windows"
             },
-            "action": {"type": "string", "description": "Concrete dated action recommendation"}
+            "action": {"type": "string", "description": "Concrete dated action recommendation"},
+            "source_map": {
+                "type": "array",
+                "description": (
+                    "Phase 3.5: Evidence-key verification. For EVERY factual claim "
+                    "about house lords, planetary positions, or technique outcomes, "
+                    "map it to the exact evidence key from chart_data."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "claim": {"type": "string", "description": "The factual claim being made"},
+                        "evidence_key": {
+                            "type": "string",
+                            "description": (
+                                "Dot-path into chart_data. Examples: "
+                                "'house_lords.western_lords.7', "
+                                "'house_lords.vedic_lords.10', "
+                                "'western.natal.Sun.sign', "
+                                "'vedic.predictive.vimshottari.current_dasha'"
+                            )
+                        },
+                        "value": {"type": "string", "description": "The value read from the evidence"},
+                    },
+                    "required": ["claim", "evidence_key", "value"],
+                },
+            },
         },
         "required": ["verdict", "confidence", "timing_windows", "supporting_evidence", "reasoning_chain", "key_dates", "action"]
     }
@@ -537,6 +661,23 @@ CRITICAL: All dates must be AFTER {today}. Do not cite past dates."""
                     verdict_data.get("confidence_reason", "") +
                     " [Adjusted: multi-system Arbiter synthesis carries higher authority]"
                 )
+
+        # Step 1c: EVIDENCE-KEY VERIFICATION (Phase 3.5 — Hallucination Protocol)
+        # Programmatically verify source_map claims against actual chart_data.
+        # This replaces regex-based post-hoc validation with prompt-architecture alignment.
+        source_map = verdict_data.get("source_map", [])
+        if source_map:
+            evidence_errors = _verify_source_map(source_map, self.claim_extractor.ref,
+                                                  self.claim_extractor.house_lords)
+            if evidence_errors:
+                logger.warning(
+                    f"Evidence-key verification found {len(evidence_errors)} mismatches "
+                    f"for: {question[:50]}"
+                )
+                for err in evidence_errors:
+                    logger.info(f"  Source map error: {err}")
+                # Inject correction into verdict data so NARRATE uses correct values
+                verdict_data["_evidence_corrections"] = evidence_errors
 
         # Step 2: VERIFY — programmatic claim checks on key_dates and evidence
         verification_text = str(verdict_data)

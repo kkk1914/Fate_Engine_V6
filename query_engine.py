@@ -320,13 +320,26 @@ class QueryEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _detect_themes(self, questions: List[str]) -> Dict:
-        """Detect themes AND target houses via a single structured LLM call.
+        """Detect themes AND target houses via tiered strategy.
+
+        Phase 3.4 detection cascade:
+          1. Semantic embedding (fast, cheap, accurate for clear questions)
+          2. LLM structured_generate (handles ambiguous/complex questions)
+          3. Keyword fallback (no API needed — offline resilience)
 
         Returns {"themes": [...], "target_houses": [...]}.
-        Falls back to keyword matching if the LLM call fails.
         """
-        joined = "\n".join(f"Q{i+1}: {q}" for i, q in enumerate(questions))
+        # Tier 1: Semantic embedding classification (Phase 3.4)
+        try:
+            result = self._detect_themes_embedding(questions)
+            if result and result.get("themes"):
+                logger.info(f"Theme detection via embeddings: {result['themes']}")
+                return result
+        except Exception as e:
+            logger.debug(f"Embedding theme detection failed: {e}")
 
+        # Tier 2: LLM structured call (handles ambiguity)
+        joined = "\n".join(f"Q{i+1}: {q}" for i, q in enumerate(questions))
         try:
             from experts.gateway import gateway
 
@@ -351,7 +364,6 @@ class QueryEngine:
                 data = result["data"]
                 themes = [t for t in data.get("themes", []) if t in THEMES]
                 houses = [h for h in data.get("target_houses", []) if 1 <= h <= 12]
-                # Fallback: derive houses from themes if LLM missed them
                 if themes and not houses:
                     houses = sorted(set(
                         h for t in themes for h in THEME_HOUSE_MAP.get(t, [])
@@ -361,8 +373,85 @@ class QueryEngine:
         except Exception as e:
             logger.debug(f"Structured theme detection failed: {e}")
 
-        # Graceful degradation: keyword fallback
+        # Tier 3: Keyword fallback (offline-safe)
         return self._detect_themes_keyword_fallback(questions)
+
+    def _detect_themes_embedding(self, questions: List[str]) -> Optional[Dict]:
+        """Classify themes via cosine similarity on Gemini text embeddings.
+
+        Phase 3.4: Uses models/text-embedding-004 to embed user questions,
+        then compares against pre-computed theme descriptions via cosine similarity.
+        Much faster and cheaper than a full LLM call (~0.01 vs ~0.05 per call).
+
+        Returns None if similarity is too low (ambiguous → fall through to LLM).
+        """
+        from experts.gateway import gateway
+        if not gateway.client:
+            return None
+
+        # Canonical theme descriptions for embedding comparison
+        theme_descriptions = {
+            "wealth": "financial success, money, income, investment, becoming wealthy or rich",
+            "career": "career path, job, work, professional growth, promotion, business",
+            "relationship": "love, marriage, partner, dating, romantic connection, family, children",
+            "health": "physical health, illness, medical condition, vitality, mental wellbeing",
+            "timing": "when will something happen, which year, how soon, timeline, specific dates",
+            "identity": "who am I, life purpose, soul mission, destiny, true self, meaning",
+            "relocation": "moving, travel, living abroad, relocating, geographic change",
+        }
+
+        try:
+            from google import genai
+            # Embed all questions as a single block
+            question_text = " ".join(questions)
+
+            # Get embedding for the question
+            q_result = gateway.client.models.embed_content(
+                model="models/text-embedding-004",
+                contents=question_text,
+            )
+            q_embedding = q_result.embeddings[0].values
+
+            # Get embeddings for all theme descriptions (batch)
+            theme_keys = list(theme_descriptions.keys())
+            theme_texts = [theme_descriptions[k] for k in theme_keys]
+            t_result = gateway.client.models.embed_content(
+                model="models/text-embedding-004",
+                contents=theme_texts,
+            )
+
+            # Compute cosine similarities
+            import math
+            similarities = {}
+            for i, key in enumerate(theme_keys):
+                t_embedding = t_result.embeddings[i].values
+                dot = sum(a * b for a, b in zip(q_embedding, t_embedding))
+                norm_q = math.sqrt(sum(a * a for a in q_embedding))
+                norm_t = math.sqrt(sum(a * a for a in t_embedding))
+                sim = dot / (norm_q * norm_t) if (norm_q * norm_t) > 0 else 0
+                similarities[key] = sim
+
+            # Sort by similarity, take top matches above threshold
+            THRESHOLD = 0.45  # Below this → ambiguous, defer to LLM
+            sorted_themes = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
+            top_themes = [k for k, v in sorted_themes if v >= THRESHOLD][:3]
+
+            if not top_themes:
+                logger.debug(f"Embedding similarities all below threshold: {sorted_themes[:3]}")
+                return None  # Fall through to LLM
+
+            # Derive target houses from themes
+            houses = sorted(set(
+                h for t in top_themes for h in THEME_HOUSE_MAP.get(t, [])
+            ))
+
+            logger.info(f"Embedding classification: {top_themes} "
+                         f"(top similarity: {sorted_themes[0][1]:.3f})")
+            return {"themes": top_themes, "target_houses": houses}
+
+        except Exception as e:
+            logger.debug(f"Embedding classification error: {e}")
+            return None
 
     def _detect_themes_keyword_fallback(self, questions: List[str]) -> Dict:
         """Keyword-based theme detection (fallback when LLM is unavailable)."""

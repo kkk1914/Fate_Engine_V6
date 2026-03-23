@@ -2111,12 +2111,16 @@ class Archon:
         query_context: dict, expert_block: str,
         wealth_block: str, wealth_score: float,
         citation_registry: dict, expert_analyses: list,
+        correction_note: str = "",
     ) -> Optional[str]:
         """Generate a single section (evidence plan → prose → validation).
 
         Thread-safe: reads only from immutable inputs (ref, chart_data,
         arbiter_synthesis) and stateless validators. Section memory is
         NOT updated here — caller handles that after all futures complete.
+
+        correction_note: Phase 3.2 — if provided, appended to the prompt
+        to fix voice consistency issues detected in a previous generation.
         """
         prompt = self._build_section_prompt(
             sec_num, sd, arbiter_synthesis, chart_data, ref,
@@ -2139,6 +2143,10 @@ class Archon:
                 prompt, validated_plan, sd)
         else:
             prose_prompt = prompt  # graceful degradation
+
+        # Phase 3.2: Append correction note if regenerating for voice consistency
+        if correction_note:
+            prose_prompt += f"\n\n═══ CORRECTION NOTE ═══\n{correction_note}\n═══════════════════════"
 
         response = gateway.generate(
             system_prompt=sys_prompt,
@@ -2357,22 +2365,63 @@ class Archon:
             header, sections, generated_sec_nums, clean_questions, temporal_clusters
         )
 
+        # ── Phase 3.2: Voice Consistency Verification ────────────────────
+        consistency_issues = self._check_voice_consistency(sections, generated_sec_nums)
+        if consistency_issues:
+            logger.warning(f"Voice consistency check found {len(consistency_issues)} issues")
+            for issue in consistency_issues:
+                if issue.get("severity") == "HIGH":
+                    # Regenerate offending section with corrective instruction
+                    sec_idx = issue.get("section_index")
+                    if sec_idx is not None and 0 <= sec_idx < len(sections):
+                        logger.info(f"Regenerating section {sec_idx} due to HIGH severity issue")
+                        sec_num = generated_sec_nums[sec_idx]
+                        sd = SECTION_DEFS[sec_num]
+                        corrected = self._generate_single_section(
+                            sec_num, sd, arbiter_synthesis, chart_data, ref,
+                            cluster_block, temporal_clusters, clean_questions,
+                            query_context, expert_block, wealth_block, wealth_score,
+                            citation_registry, expert_analyses,
+                            correction_note=f"CORRECTION REQUIRED: {issue.get('issue', '')}",
+                        )
+                        if corrected:
+                            sections[sec_idx] = corrected
+                            # Reassemble after correction
+                            english_report = self._assemble_report(
+                                header, sections, generated_sec_nums,
+                                clean_questions, temporal_clusters
+                            )
+
         result = {"en": english_report}
 
-        # ── Burmese translation pass ──────────────────────────────────────
+        # ── Burmese translation pass (Phase 2.5: concurrent) ──────────────
         if language == "my":
             glossary = self._load_burmese_glossary()
             if glossary:
-                print("   [Archon] Translating report to Burmese...")
+                print("   [Archon] Translating report to Burmese (concurrent)...")
                 burmese_header = self._translate_header(header, glossary)
-                burmese_sections = []
-                for i, (sec_num, eng_content) in enumerate(zip(generated_sec_nums, sections)):
+
+                # Phase 2.5: Translate all sections concurrently via thread pool
+                # Each _translate_section() calls gemini-2.5-flash (translation_model)
+                # Sequential: ~30s for 10 sections. Concurrent: ~5s.
+                from concurrent.futures import ThreadPoolExecutor
+
+                section_data = list(zip(generated_sec_nums, sections))
+
+                def _translate_one(args):
+                    idx, sec_num, eng_content = args
                     sd = SECTION_DEFS[sec_num]
-                    print(f"   [Archon] Translating {i+1}/{len(sections)}: {sd['title']}...")
-                    translated = self._translate_section(
+                    print(f"   [Archon] Translating {idx+1}/{len(section_data)}: {sd['title']}...")
+                    return self._translate_section(
                         eng_content, glossary, sd.get("type", "")
                     )
-                    burmese_sections.append(translated)
+
+                with ThreadPoolExecutor(max_workers=min(len(section_data), 8)) as pool:
+                    burmese_sections = list(pool.map(
+                        _translate_one,
+                        [(i, sn, ec) for i, (sn, ec) in enumerate(section_data)],
+                    ))
+
                 burmese_report = self._assemble_report(
                     burmese_header, burmese_sections, generated_sec_nums,
                     original_questions or clean_questions, temporal_clusters,
@@ -2527,6 +2576,21 @@ ABSOLUTE RULES (apply to ALL sections):
             data_block = self._build_predictive_block(ref, chart_data)
         else:
             data_block = self._build_natal_block(ref, chart_data)
+
+        # ── Degradation Warning: tell LLM which systems failed ────────────────
+        degraded = chart_data.get("degradation_flags", {})
+        if degraded:
+            failed = [sys for sys, status in degraded.items() if status == "calculation_failed"]
+            if failed:
+                warning_lines = [
+                    "=== ⚠ SYSTEM DEGRADATION WARNING ===",
+                    f"The following systems FAILED during calculation: {', '.join(failed)}.",
+                    "You MUST NOT cite evidence from these systems.",
+                    "Do NOT invent or hallucinate data for failed systems.",
+                    "Base your analysis ONLY on the systems that produced valid data.",
+                    "=== END DEGRADATION WARNING ===",
+                ]
+                data_block = "\n".join(warning_lines) + "\n\n" + data_block
 
         # ── Query Architecture: inject header_block into data_block ──────────────
         if query_context:
@@ -4560,6 +4624,93 @@ Where systems agree, confidence is high. Where they diverge, both signals are na
                     logger.info(f"  Shifted past month: {match.group(0)} → {month_name} {current_year + 1}")
 
         return content
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Phase 3.2: Voice Consistency Verification
+    # ─────────────────────────────────────────────────────────────────────────
+
+    VOICE_CHECK_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "issues": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "section_index": {"type": "integer", "description": "0-based index of the problematic section"},
+                        "issue": {"type": "string", "description": "Description of the consistency problem"},
+                        "severity": {"type": "string", "enum": ["HIGH", "MEDIUM", "LOW"]},
+                    },
+                    "required": ["section_index", "issue", "severity"],
+                },
+            },
+            "overall_coherent": {"type": "boolean"},
+        },
+        "required": ["issues", "overall_coherent"],
+    }
+
+    def _check_voice_consistency(self, sections: list, sec_nums: list) -> list:
+        """Run lightweight voice consistency check across all sections.
+
+        Phase 3.2: After all sections are generated, scan for:
+        - Tone shifts (formal ↔ casual within the report)
+        - Contradictory planet descriptions (e.g., "Mars is strong" vs "Mars is debilitated")
+        - Date/prediction contradictions between sections
+        - Cross-section factual inconsistencies
+
+        Cost: ~$0.10 per check (gemini-2.5-flash).
+        Returns list of issue dicts with section_index, issue, severity.
+        """
+        if len(sections) < 3:
+            return []  # Not enough sections to check
+
+        # Build condensed section summaries (first 300 chars each) to stay under token limits
+        section_summaries = []
+        for i, (sec_num, content) in enumerate(zip(sec_nums, sections)):
+            sd = SECTION_DEFS.get(sec_num, {})
+            title = sd.get("title", f"Section {sec_num}")
+            # Take first 300 chars of content, excluding headers
+            lines = [l for l in content.split("\n") if l.strip() and not l.startswith("#")]
+            snippet = " ".join(lines)[:300]
+            section_summaries.append(f"[{i}] {title}: {snippet}")
+
+        check_prompt = (
+            "Review these report sections for cross-section consistency.\n"
+            "Flag any: (1) contradictory planet descriptions, (2) contradictory date claims,\n"
+            "(3) tone shifts between sections, (4) facts stated in one section that are\n"
+            "contradicted in another.\n\n"
+            "Only flag HIGH severity for genuine factual contradictions.\n"
+            "Flag MEDIUM for tone inconsistencies. Flag LOW for minor style variance.\n\n"
+            "SECTIONS:\n" + "\n\n".join(section_summaries)
+        )
+
+        try:
+            result = gateway.structured_generate(
+                system_prompt="You are a report quality auditor checking for cross-section consistency.",
+                user_prompt=check_prompt,
+                output_schema=self.VOICE_CHECK_SCHEMA,
+                model=settings.translation_model,  # gemini-2.5-flash — fast + cheap
+                max_tokens=2000,
+                temperature=0.0,
+            )
+
+            if result.get("success") and result.get("data"):
+                issues = result["data"].get("issues", [])
+                coherent = result["data"].get("overall_coherent", True)
+                if issues:
+                    logger.info(
+                        f"Voice consistency: {len(issues)} issues, coherent={coherent}"
+                    )
+                    for issue in issues:
+                        logger.info(
+                            f"  [{issue.get('severity')}] Section {issue.get('section_index')}: "
+                            f"{issue.get('issue', '')[:100]}"
+                        )
+                return issues
+        except Exception as e:
+            logger.warning(f"Voice consistency check failed: {e}")
+
+        return []
 
     # ─────────────────────────────────────────────────────────────────────────
     # Burmese Translation Layer

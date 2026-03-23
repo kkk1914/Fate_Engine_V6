@@ -10,17 +10,25 @@ logger = logging.getLogger(__name__)
 import swisseph as swe
 import os
 
-# Swiss Ephemeris is a C-library wrapper with global state (e.g. swe.set_sid_mode).
-# Concurrent threads calling swe functions can corrupt positions silently.
-# Using a SINGLE lock serialized all 4 systems (zero parallelism).
-# Solution: one lock per system. Western + Hellenistic share the tropical lock
-# (both use default swe mode). Vedic gets its own lock (sets sidereal mode).
-# Saju gets its own lock (lunar calendar, different swe calls).
-_swe_lock_tropical = threading.Lock()   # Western + Hellenistic (both tropical)
-_swe_lock_sidereal = threading.Lock()   # Vedic (sidereal ayanamsa)
-_swe_lock_saju     = threading.Lock()   # Saju/Bazi (lunar calendar)
-# Keep backward compat alias
-_swe_lock = _swe_lock_tropical
+# Phase 1 modules
+from core.logging_config import set_request_id, get_request_id
+from core.geocoder import geocoder
+from core.storage import get_storage, LocalStorage
+from core.telemetry import init_cost_tracker, get_cost_tracker
+
+# Swiss Ephemeris is a C-library wrapper with ONE global memory space.
+# swe.set_sid_mode(), swe.set_ephe_path(), swe.set_topo() etc. all mutate
+# process-wide C state. Separate per-system locks do NOT protect this shared
+# state — a sidereal thread calling set_sid_mode() while a tropical thread
+# reads calc_ut() can corrupt positions silently.
+#
+# SINGLE GLOBAL LOCK: All swe calls serialize under one lock. This eliminates
+# an entire class of silent data corruption. The ~2-4s added latency is
+# negligible vs. the 60-90s LLM call phase.
+#
+# For true parallelism between systems, use ProcessPoolExecutor (Phase 2.4)
+# which gives each process its own copy of the C library's global state.
+_swe_lock = threading.Lock()
 
 # Core mathematical engines
 from core.ephemeris import ephe
@@ -240,6 +248,10 @@ class FatesOrchestrator:
     """Coordinates calculation, analysis, and synthesis with V2 mathematical rigor."""
 
     def __init__(self):
+        # Per-report tracking (set during generate_report)
+        self.last_degraded_systems: List[str] = []
+        self.last_cost_summary: Dict[str, Any] = {}
+
         # Traditional engines
         self.western_engine = WesternEngine()
         self.hellenistic_engine = HellenisticEngine()
@@ -313,7 +325,34 @@ class FatesOrchestrator:
         """
         if language is None:
             language = settings.report_language
-        print("🔮 Fates Engine v2.0: Initializing Mathematical Core...")
+        self.last_degraded_systems = []  # Reset per-report
+
+        # Phase 1.2: Request-scoped tracing
+        request_id = set_request_id()
+        logger.info(f"Report generation started", extra={"phase": "init"})
+
+        # Phase 1.3: Per-request cost tracking
+        init_cost_tracker(request_id=request_id)
+
+        # Phase 3.1: Generate deterministic report_id for idempotency
+        import time as _time
+        _t_start = _time.time()
+        from core.report_metadata import generate_report_id, ReportMetadata, get_idempotency_cache
+        report_id = generate_report_id(
+            birth_datetime=birth_datetime, location=location,
+            lat=lat, lon=lon, questions=user_questions,
+        )
+        logger.info(f"Report ID: {report_id}", extra={"report_id": report_id})
+
+        # Check idempotency cache
+        cache = get_idempotency_cache()
+        cached = cache.get(report_id)
+        if cached:
+            logger.info(f"Returning cached report: {report_id}")
+            self.last_cost_summary = {"total_cost_usd": cached.get("cost_usd", 0)}
+            return cached["storage_path"]
+
+        print(f"🔮 Fates Engine v{settings.engine_version}: Initializing Mathematical Core...")
         print(f"   Subject: {name}")
         print(f"   Birth: {birth_datetime}")
         print(f"   Location: {location}")
@@ -321,6 +360,15 @@ class FatesOrchestrator:
         # 1. Parse inputs and calculate charts (V2 with Primary Directions, Ashtakavarga, etc.)
         print("\n📊 Layer 1: Mathematical Calculations (4 systems + Vargas + Directions)...")
         chart_data = self._calculate_charts(birth_datetime, location, gender, lat=lat, lon=lon)
+
+        # Phase 1.6: Validate chart_data structure at boundary
+        from core.models import ChartData
+        try:
+            ChartData.validate_chart(chart_data)
+            logger.info("Chart data validated against Pydantic schema")
+        except Exception as e:
+            logger.warning(f"Chart data validation warning: {e}")
+            # Non-fatal: log but continue — extra='allow' makes this soft
 
         # ── Deterministic House Lord & Element Table ─────────────────────
         # Computed ONCE from cusps so LLMs cannot hallucinate lords/elements
@@ -436,34 +484,63 @@ class FatesOrchestrator:
                    citation_data=citation_data,
                    validation_matrix=validation_matrix)
 
-        # 6. Save with timestamp
-        os.makedirs(output_dir, exist_ok=True)
+        # 6. Save with storage backend (Phase 1.4)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).rstrip()
         safe_name = safe_name.replace(' ', '_')
 
+        storage = get_storage()
+        # For local storage, use output_dir as base; for cloud, subdir is output_dir
+        if isinstance(storage, LocalStorage):
+            storage.base_dir = output_dir
+
         # Always save English report
         en_report = report_dict.get("en", "")
         en_filename = f"master_report_v2_{safe_name}_{timestamp}_en.md"
-        en_filepath = os.path.join(output_dir, en_filename)
-        with open(en_filepath, "w", encoding="utf-8") as f:
-            f.write(en_report)
+        en_filepath = storage.save_report(en_filename, en_report)
+
+        # Phase 1.3: Log cost summary
+        cost_tracker = get_cost_tracker()
+        cost_summary = cost_tracker.summary() if cost_tracker else {}
 
         print(f"\n✨ Complete! Report generated with V2 mathematical precision.")
         print(f"   English report: {en_filepath}")
         print(f"   Length: {len(en_report):,} characters")
         print(f"   Convergences detected: {len(convergences)}")
+        if cost_summary:
+            print(f"   Total cost: ${cost_summary.get('total_cost_usd', 0):.4f}")
+            print(f"   Total tokens: {cost_summary.get('total_tokens', 0):,}")
+            print(f"   LLM calls: {cost_summary.get('total_calls', 0)}")
 
         # Save Burmese report if generated
         if "my" in report_dict:
             my_report = report_dict["my"]
             my_filename = f"master_report_v2_{safe_name}_{timestamp}_my.md"
-            my_filepath = os.path.join(output_dir, my_filename)
-            with open(my_filepath, "w", encoding="utf-8") as f:
-                f.write(my_report)
+            my_filepath = storage.save_report(my_filename, my_report)
             print(f"   Burmese report: {my_filepath}")
             print(f"   Length: {len(my_report):,} characters")
 
+        # Store cost summary for API access
+        self.last_cost_summary = cost_summary
+
+        # Phase 3.1: Save metadata and cache for idempotency
+        elapsed = _time.time() - _t_start
+        meta = ReportMetadata(
+            report_id=report_id,
+            engine_version=settings.engine_version,
+            generation_time_seconds=round(elapsed, 1),
+            cost_usd=cost_summary.get("total_cost_usd", 0),
+            total_tokens=cost_summary.get("total_tokens", 0),
+            total_llm_calls=cost_summary.get("total_calls", 0),
+            input_params={"birth_datetime": birth_datetime, "location": location,
+                          "name": name, "gender": gender},
+            degraded_systems=self.last_degraded_systems,
+        )
+        meta.save_alongside(en_filepath)
+        cache.set(report_id, en_filepath, meta.to_dict())
+        self.last_report_id = report_id
+
+        logger.info(f"Report generation complete", extra={"phase": "complete"})
         return en_filepath
 
     def _calculate_charts(self, birth_dt: str, location: str, gender: str, lat: float = None, lon: float = None, time_known: bool = True) -> Dict:
@@ -553,24 +630,18 @@ class FatesOrchestrator:
         hour   = dt.hour
         minute = dt.minute
 
-        # Geocoding
+        # Geocoding (Phase 1.1: cached via core.geocoder)
         if lat is not None and lon is not None:
             print(f"   📍 Using provided coordinates → {lat:.4f}, {lon:.4f}")
         else:
-            try:
-                from geopy.geocoders import Nominatim
-                from geopy.exc import GeocoderTimedOut, GeocoderUnavailable
-                geolocator = Nominatim(user_agent="fates_engine_v2/2.0")
-                location_obj = geolocator.geocode(location, timeout=10)
-                if location_obj:
-                    lat, lon = location_obj.latitude, location_obj.longitude
-                    print(f"   📍 Geocoded '{location}' → {lat:.4f}, {lon:.4f}")
-                else:
-                    raise ValueError(f"Location not found: '{location}'")
-            except ImportError:
-                raise ImportError("geopy required. Install: pip install geopy")
-            except (GeocoderTimedOut, GeocoderUnavailable) as e:
-                raise ConnectionError(f"Geocoding error: {e}")
+            lat, lon = geocoder.geocode(location)
+            print(f"   📍 Geocoded '{location}' → {lat:.4f}, {lon:.4f}")
+
+        # Validate lat/lon range (whether user-supplied or geocoded)
+        if not (-90 <= lat <= 90):
+            raise ValueError(f"Latitude {lat} out of range. Must be between -90 and 90.")
+        if not (-180 <= lon <= 180):
+            raise ValueError(f"Longitude {lon} out of range. Must be between -180 and 180.")
 
         # Julian Day
         jd = ephe.julian_day(dt)
@@ -589,12 +660,12 @@ class FatesOrchestrator:
         print("   → Calculating all 4 systems in parallel...")
 
         def _calc_western():
-            with _swe_lock_tropical:
+            with _swe_lock:
                 return self.western_engine.calculate(jd, lat, lon, time_known, year)
 
         def _calc_vedic():
             try:
-                with _swe_lock_sidereal:
+                with _swe_lock:
                     return calculate_vedic(jd, lat, lon, time_known, dt)
             except Exception as e:
                 logger.error(f"Vedic calculation error: {e}")
@@ -602,7 +673,7 @@ class FatesOrchestrator:
 
         def _calc_saju():
             try:
-                with _swe_lock_saju:
+                with _swe_lock:
                     return calculate_bazi(dt, time_known, gender, jd, lon=lon)
             except Exception as e:
                 import traceback as _tb
@@ -612,13 +683,16 @@ class FatesOrchestrator:
 
         def _calc_hellenistic():
             try:
-                with _swe_lock_tropical:
+                with _swe_lock:
                     return self.hellenistic_engine.calculate(jd, lat, lon, time_known, year)
             except Exception as e:
                 logger.error(f"Hellenistic calculation error: {e}")
                 return {"lots": {}, "zodiacal_releasing": {}, "annual_profections": {}}
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        # max_workers=1: swe calls serialize under global lock anyway.
+        # Keep executor for timeout handling and exception isolation.
+        # True parallelism deferred to Phase 2.4 (ProcessPoolExecutor).
+        with ThreadPoolExecutor(max_workers=1) as pool:
             f_western     = pool.submit(_calc_western)
             f_vedic       = pool.submit(_calc_vedic)
             f_saju        = pool.submit(_calc_saju)
@@ -641,66 +715,70 @@ class FatesOrchestrator:
         if not hellenistic.get("lots") and not hellenistic.get("zodiacal_releasing"):
             degradation_flags["Hellenistic"] = "calculation_failed"
         if degradation_flags:
-            logger.warning(f"System degradation: {degradation_flags}")
+            logger.error(f"System degradation: {degradation_flags}")
+
+        # Surface degradation to instance for API access
+        self.last_degraded_systems = list(degradation_flags.keys())
 
         print("   ✓ All 4 base systems calculated")
 
-        # ── POST-PROCESSING (parallelized by lock affinity) ────────────────
-        # Group 1: Tropical-lock engines (serialize within, parallel with others)
-        # Group 2: Essential Dignities (pure Python, no lock)
-        # Group 3: Kakshya Transit (sidereal lock, parallel with tropical)
+        # ── POST-PROCESSING (parallelized where safe) ─────────────────────
+        # Group 1: swe-dependent engines (all serialize under _swe_lock)
+        # Group 2: Essential Dignities (pure Python, no swe calls — truly parallel)
+        # Group 3: Kakshya Transit (swe-dependent, serializes under _swe_lock)
         def _compute_tropical_chain():
-            """All tropical-lock engines in sequence (they'd contend anyway)."""
+            """All swe-dependent post-processing engines under global lock."""
             results = {}
             try:
-                # Primary Directions (Gold Standard)
-                print("   → Computing Primary Directions...")
-                pd_engine = PrimaryDirections(jd, lat, lon)
-                results["primary_dirs"] = pd_engine.get_critical_directions(years_ahead=15)
+                with _swe_lock:
+                    # Primary Directions (Gold Standard)
+                    print("   → Computing Primary Directions...")
+                    pd_engine = PrimaryDirections(jd, lat, lon)
+                    results["primary_dirs"] = pd_engine.get_critical_directions(years_ahead=15)
 
-                # Lunar Returns (15-year window)
-                print("   → Calculating Lunar Returns (15yr)...")
-                moon_lon = western['natal']['placements']['Moon']['longitude']
-                results["lunar_returns"] = self.western_engine.calculate_lunar_returns(
-                    jd, moon_lon, years=15
-                )
+                    # Lunar Returns (15-year window)
+                    print("   → Calculating Lunar Returns (15yr)...")
+                    moon_lon = western['natal']['placements']['Moon']['longitude']
+                    results["lunar_returns"] = self.western_engine.calculate_lunar_returns(
+                        jd, moon_lon, years=15
+                    )
 
-                # Pre-natal Syzygy (Phase 3)
-                print("   → Calculating Pre-natal Syzygy...")
-                syzygy_engine = SyzygyEngine(jd)
-                results["syzygy"] = syzygy_engine.calculate_syzygy()
+                    # Pre-natal Syzygy (Phase 3)
+                    print("   → Calculating Pre-natal Syzygy...")
+                    syzygy_engine = SyzygyEngine(jd)
+                    results["syzygy"] = syzygy_engine.calculate_syzygy()
 
-                # Solar Returns — 15-year window
-                sr_engine = SolarReturnEngine(jd, lat, lon)
-                current_year = datetime.now().year
-                solar_returns = sr_engine.get_return_series(current_year, years=15)
-                results["solar_returns"] = solar_returns
-                results["solar_return_analysis"] = [
-                    sr_engine.analyze_return_vs_natal(sr) for sr in solar_returns
-                ]
+                    # Solar Returns — 15-year window
+                    sr_engine = SolarReturnEngine(jd, lat, lon)
+                    current_year = datetime.now().year
+                    solar_returns = sr_engine.get_return_series(current_year, years=15)
+                    results["solar_returns"] = solar_returns
+                    results["solar_return_analysis"] = [
+                        sr_engine.analyze_return_vs_natal(sr) for sr in solar_returns
+                    ]
 
-                # Dodecatemoria (12th parts) — also tropical lock
-                print("   → Calculating Dodecatemoria (12th parts)...")
-                try:
-                    dodec_engine = DodecatemoriaEngine()
-                    results["dodecatemoria"] = dodec_engine.calculate(jd, lat, lon, True)
-                except Exception as e:
-                    print(f"   ⚠️  Dodecatemoria error: {e}")
-                    results["dodecatemoria"] = {"error": str(e)}
-
-                # Fixed Star Parans — also tropical lock, conditional
-                if time_known:
-                    print("   → Calculating Fixed Star Parans...")
+                    # Dodecatemoria (12th parts)
+                    print("   → Calculating Dodecatemoria (12th parts)...")
                     try:
-                        from core.fixed_star_parans import calculate_parans
-                        parans_data = calculate_parans(jd, lat, lon, time_known=True)
-                        results["parans"] = parans_data
+                        dodec_engine = DodecatemoriaEngine()
+                        results["dodecatemoria"] = dodec_engine.calculate(jd, lat, lon, True)
                     except Exception as e:
-                        print(f"   ⚠️  Parans error: {e}")
+                        print(f"   ⚠️  Dodecatemoria error: {e}")
+                        results["dodecatemoria"] = {"error": str(e)}
+
+                    # Fixed Star Parans — conditional
+                    if time_known:
+                        print("   → Calculating Fixed Star Parans...")
+                        try:
+                            from core.fixed_star_parans import calculate_parans
+                            parans_data = calculate_parans(jd, lat, lon, time_known=True)
+                            results["parans"] = parans_data
+                        except Exception as e:
+                            print(f"   ⚠️  Parans error: {e}")
+                            results["parans"] = None
+                    else:
+                        print("   ℹ️  Skipping Fixed Star Parans (birth time unknown — RAMC required)")
                         results["parans"] = None
-                else:
-                    print("   ℹ️  Skipping Fixed Star Parans (birth time unknown — RAMC required)")
-                    results["parans"] = None
 
             except Exception as e:
                 logger.error(f"Tropical chain error: {e}")
@@ -744,7 +822,7 @@ class FatesOrchestrator:
                 return {"dignities": {}, "receptions": {}}
 
         def _compute_kakshya():
-            """Kakshya Transit — sidereal lock, parallel with tropical."""
+            """Kakshya Transit — swe-dependent, acquires global lock."""
             print("   → Calculating Kakshya Transit Quality...")
             try:
                 from systems.kakshya_transit import calculate_kakshya_transits
@@ -755,10 +833,11 @@ class FatesOrchestrator:
                     bhinna = {}
                 if not sarva or not isinstance(sarva, list) or len(sarva) != 12:
                     sarva = [20] * 12
-                return calculate_kakshya_transits(
-                    natal_jd=jd, lat=lat, lon=lon,
-                    bhinna_av=bhinna, sarva_av=sarva, years_ahead=15
-                )
+                with _swe_lock:
+                    return calculate_kakshya_transits(
+                        natal_jd=jd, lat=lat, lon=lon,
+                        bhinna_av=bhinna, sarva_av=sarva, years_ahead=15
+                    )
             except Exception as e:
                 print(f"   ⚠️  Kakshya error: {e}")
                 return {"error": str(e)}

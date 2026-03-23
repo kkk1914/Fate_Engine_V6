@@ -9,7 +9,8 @@ class EphemerisEngine:
     """Precision ephemeris calculations to 0.001 arcsecond."""
 
     def __init__(self):
-        self.ephe_path = settings.ephe_path
+        # Resolve to absolute path for container portability (./ephe → /app/ephe)
+        self.ephe_path = os.path.abspath(settings.ephe_path)
         if os.path.exists(self.ephe_path):
             swe.set_ephe_path(self.ephe_path)
         else:

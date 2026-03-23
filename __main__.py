@@ -23,8 +23,23 @@ def main():
     lat_raw  = ask("Latitude override? (press Enter to skip): ")
     lon_raw  = ask("Longitude override? (press Enter to skip): ")
 
-    lat = float(lat_raw) if lat_raw else None
-    lon = float(lon_raw) if lon_raw else None
+    lat, lon = None, None
+    if lat_raw:
+        try:
+            lat = float(lat_raw)
+            if not (-90 <= lat <= 90):
+                print("  ⚠ Latitude must be between -90 and 90. Ignoring override.")
+                lat = None
+        except ValueError:
+            print(f"  ⚠ Invalid latitude '{lat_raw}'. Ignoring override.")
+    if lon_raw:
+        try:
+            lon = float(lon_raw)
+            if not (-180 <= lon <= 180):
+                print("  ⚠ Longitude must be between -180 and 180. Ignoring override.")
+                lon = None
+        except ValueError:
+            print(f"  ⚠ Invalid longitude '{lon_raw}'. Ignoring override.")
 
     # Language selection
     lang = ask("Report language [en/my] (default: en): ", "en").lower()

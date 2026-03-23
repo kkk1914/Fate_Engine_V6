@@ -62,6 +62,29 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # Logging (Phase 1.2)
+    log_level: str = "INFO"
+    log_json: bool = False  # True for structured JSON logs (production/Docker)
+
+    # Storage Backend (Phase 1.4)
+    # "local" = filesystem (default), "gcs" = Google Cloud Storage
+    storage_backend: str = "local"
+    gcs_bucket: str = ""
+
+    # Engine Version (Phase 1.5)
+    engine_version: str = "3.0.0"
+
+    # Redis (Phase 3.1: idempotency cache, geocoding cache)
+    # If empty, Redis features are disabled (graceful degradation).
+    redis_url: str = ""
+
+    # Concurrency Control (Phase 2.3)
+    # Max concurrent report generations behind the API semaphore.
+    # 10 users × 15+ LLM calls = 150+ concurrent API calls → Gemini rate limits.
+    max_concurrent_reports: int = 3
+    # Seconds to wait for a semaphore slot before returning HTTP 429.
+    queue_timeout: int = 300
+
     # Test Mode (skip API calls if True)
     test_mode: bool = False
 
