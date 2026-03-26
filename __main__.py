@@ -1,4 +1,9 @@
-"""Interactive entry point for Fates Engine."""
+"""Interactive entry point for Fates Engine.
+
+Usage:
+    python -m Fate_Engine_V6             # Interactive CLI report generation
+    python -m Fate_Engine_V6 --api       # Launch FastAPI server
+"""
 from orchestrator import orchestrator
 from config import settings
 
@@ -8,8 +13,17 @@ def ask(prompt: str, default: str = "") -> str:
     return val if val else default
 
 
+def run_api():
+    """Launch the FastAPI server."""
+    import uvicorn
+    print(f"🚀 Fates Engine v{settings.engine_version} — Starting API server")
+    print(f"   Host: {settings.api_host}  Port: {settings.api_port}")
+    print("=" * 60)
+    uvicorn.run("api.main:app", host=settings.api_host, port=settings.api_port, reload=False)
+
+
 def main():
-    print("🌟 Fates Engine v2.0")
+    print(f"🌟 Fates Engine v{settings.engine_version}")
     print("=" * 60)
 
     name     = ask("Name: ")
@@ -91,20 +105,27 @@ def main():
 
     print("\n")
 
-    report_path = orchestrator.generate_report(
-        birth_datetime=birth,
-        location=location,
-        gender=gender,
-        name=name,
-        output_dir=output,
-        lat=lat,
-        lon=lon,
-        user_questions=questions if questions else None,
-        language=lang,
-    )
-
-    print(f"\n✨ Done! Report saved to: {report_path}")
+    from core.compute_pool import shutdown_pool
+    try:
+        report_path = orchestrator.generate_report(
+            birth_datetime=birth,
+            location=location,
+            gender=gender,
+            name=name,
+            output_dir=output,
+            lat=lat,
+            lon=lon,
+            user_questions=questions if questions else None,
+            language=lang,
+        )
+        print(f"\n✨ Done! Report saved to: {report_path}")
+    finally:
+        shutdown_pool()
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--api" in sys.argv:
+        run_api()
+    else:
+        main()
